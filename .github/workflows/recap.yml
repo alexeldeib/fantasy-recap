@@ -1,0 +1,135 @@
+name: Recap
+
+# The weekly job every league's site repo calls (`fantasy-recap new` writes the caller). It runs in the site repo:
+# its checkout, its secrets, its permissions and its Pages site. This repo only supplies the steps and the engine.
+# Don't give this file a concurrency group: the caller has one, and a matching group here would deadlock.
+on:
+  workflow_call:
+    inputs:
+      command:
+        description: run (recap a week, then rebuild the site) or render (rebuild from saved weeks, no network)
+        type: string
+        default: run
+      week:
+        description: Week to recap (blank = latest scored week)
+        type: string
+        default: ""
+      fresh:
+        description: Rewrite the jokes even if this week already has some (locked weeks are never touched)
+        type: boolean
+        default: false
+      dry_run:
+        description: Show the jokes in the run summary; don't commit or deploy
+        type: boolean
+        default: false
+      engine_ref:
+        description: Engine version to install. Pin it to the same ref as the caller's `uses:` line.
+        type: string
+        default: main
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: false # without it a week still ships, with plain labels instead of jokes
+
+jobs:
+  recap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60 # a hung call shouldn't hold the queue (and your hand-edit deploys) for 6 hours
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main # main as it is when this job starts, so a queued run never deploys an older commit
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - run: pip install "fantasy-recap @ git+https://github.com/alexeldeib/fantasy-recap@$ENGINE_REF"
+        env:
+          ENGINE_REF: ${{ inputs.engine_ref }}
+      - run: |
+          case "$COMMAND" in run|render) ;; *) echo "::error::command must be run or render, not '$COMMAND'"; exit 1 ;; esac
+          fantasy-recap "$COMMAND"
+        env:
+          COMMAND: ${{ inputs.command }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          WEEK: ${{ inputs.week }}
+          FRESH: ${{ inputs.fresh }}
+          DRY_RUN: ${{ inputs.dry_run }}
+      - name: Show the jokes (dry run)
+        if: ${{ inputs.dry_run }}
+        run: |
+          python - <<'EOF' | tee -a "$GITHUB_STEP_SUMMARY"
+          import json, os
+          d = json.load(open(os.environ["WEEK_FILE"]))
+          c, w = d["copy"], d["facts"]["week"]
+          print(f"## Week {w} dry run, written by `{c.get('by')}`\n\n# {c['headline']}\n\n{c['dek']}\n")
+          print(f"**{c['hero_value']}**: {c['hero_caption']}  \nMarker: {' / '.join(c['pen_notes'])}\n")
+          if c.get("story_title"):
+              print(f"### {c['story_title']}\n")
+          print("\n\n".join(c.get("story", [])) + "\n\n### Power rankings")
+          print("\n".join(f"- **{x['key']}**: {x['line']}" for x in c.get("power_lines", [])))
+          print("\n### Trophies")
+          print("\n".join(f"- **{x['key']}**: {x['line']}" for x in c["award_lines"]))
+          print("\n### Games\n" + "\n".join(f"- {x['line']}" for x in c["game_lines"]))
+          print("\n### Next week\n" + "\n".join(f"- {x['line']}" for x in c["preview_lines"]))
+          print(f"\n_{c['signoff']}_")
+          print("\n### Web research brief\n" + (c.get("news") or "(none)"))
+          EOF
+      - name: Commit the new week
+        if: ${{ !inputs.dry_run }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ -d weeks ]; then git add weeks; fi # a brand-new site has no weeks yet
+          if ! git diff --cached --quiet; then
+            git commit -m "Recap: $WEEK_FILE"
+            git pull --rebase origin main # a hand edit to another week landed mid-run: keep both
+            git push
+            fantasy-recap render # so the deploy below includes that hand edit too
+          fi
+      # Link previews: shoot each week's title card (docs/*/*/card.html, written by render) to og.jpg, the image a
+      # pasted link shows. Runs after the last render above. Best effort: without it a link gets a text-only preview.
+      - name: Link-preview images
+        if: ${{ !inputs.dry_run }}
+        continue-on-error: true
+        run: |
+          pip install pillow
+          for card in docs/*/*/card.html; do
+            dir=$(dirname "$card")
+            timeout 60 google-chrome --headless=new --no-sandbox --hide-scrollbars --force-device-scale-factor=1 \
+              --window-size=1200,630 --virtual-time-budget=6000 --screenshot="$dir/og.png" "file://$PWD/$card" || true
+            python -c 'import sys; from PIL import Image; im = Image.open(sys.argv[1]); assert im.size == (1200, 630), im.size; im.convert("RGB").save(sys.argv[2], quality=85, optimize=True, progressive=True)' \
+              "$dir/og.png" "$dir/og.jpg" || echo "::warning::No link-preview image for $dir"
+            rm -f "$dir/og.png"
+          done
+      # A site repo without its own apple-touch-icon.png gets one drawn from the league's initials (docs/icon.html).
+      - name: Home-screen icon
+        if: ${{ !inputs.dry_run && hashFiles('docs/icon.html') != '' }}
+        continue-on-error: true
+        run: |
+          pip install pillow
+          timeout 60 google-chrome --headless=new --no-sandbox --hide-scrollbars --force-device-scale-factor=1 \
+            --window-size=540,540 --virtual-time-budget=6000 --screenshot=docs/icon.png "file://$PWD/docs/icon.html" || true
+          python -c 'from PIL import Image; Image.open("docs/icon.png").convert("RGB").resize((180, 180), Image.LANCZOS).save("docs/apple-touch-icon.png")' \
+            || echo "::warning::No home-screen icon"
+          rm -f docs/icon.png
+      - name: Drop the photo-only pages
+        run: rm -f docs/*/*/card.html docs/icon.html
+      - uses: actions/upload-pages-artifact@v5
+        if: ${{ !inputs.dry_run }}
+        with:
+          path: docs
+      - id: deploy
+        if: ${{ !inputs.dry_run }}
+        uses: actions/deploy-pages@v5
+      # Deploy first so the numbers ship, then fail loudly (GitHub emails you) if Claude didn't write the jokes.
+      - name: Check the jokes made it
+        if: ${{ inputs.command == 'run' && !inputs.dry_run }}
+        run: |
+          python - <<'EOF'
+          import json, os, sys
+          d = json.load(open(os.environ["WEEK_FILE"]))
+          if d["copy"].get("by") == "template":
+              sys.exit(f"Week {d['facts']['week']} shipped without jokes. Rerun it with fresh ticked.")
+          EOF

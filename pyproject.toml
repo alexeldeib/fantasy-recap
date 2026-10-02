@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fantasy-recap"
+version = "0.1.0"
+description = "Weekly AI-written recap sites for Sleeper fantasy football leagues"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["anthropic==1.9.0"]
+
+[project.scripts]
+fantasy-recap = "fantasy_recap.cli:main"
+
+[tool.setuptools]
+packages = ["fantasy_recap"]
+
+[tool.setuptools.package-data]
+fantasy_recap = ["templates/*.html", "prompts/*.md"]
