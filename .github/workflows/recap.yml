@@ -44,10 +44,12 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
-      - run: pip install "fantasy-recap @ git+https://github.com/alexeldeib/fantasy-recap@$ENGINE_REF"
+      - name: Install the engine
+        run: pip install "fantasy-recap @ git+https://github.com/alexeldeib/fantasy-recap@$ENGINE_REF"
         env:
           ENGINE_REF: ${{ inputs.engine_ref }}
-      - run: |
+      - name: Recap
+        run: |
           case "$COMMAND" in run|render) ;; *) echo "::error::command must be run or render, not '$COMMAND'"; exit 1 ;; esac
           fantasy-recap "$COMMAND"
         env:
