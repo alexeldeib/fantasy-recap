@@ -8,10 +8,14 @@
   // Production. Cloudflare makes the DNS record and certificate on deploy; move to the product's own domain later.
   "routes": [{ "pattern": "recaps.alexeldeib.xyz", "custom_domain": true }],
   "workers_dev": false,
+  // Static files (the home-screen icon iMessage shows beside links) are served before the Worker runs.
+  "assets": { "directory": "./public" },
   // The recap template and prompts are shared with the Python engine (../fantasy_recap), imported as text.
   "rules": [{ "type": "Text", "globs": ["**/*.md", "**/*.html"], "fallthrough": true }],
   "d1_databases": [{ "binding": "DB", "database_name": "fantasy-recap", "database_id": "950baf12-b478-44c9-bcc1-ddfdfe6764d0" }],
-  "workflows": [{ "name": "recap", "binding": "RECAP", "class_name": "RecapWorkflow" }],
+  // A run's step-by-step history (facts and all) is kept for days, not the default month; the recap itself lives in D1.
+  "workflows": [{ "name": "recap", "binding": "RECAP", "class_name": "RecapWorkflow",
+                  "default_retention": { "success_retention": "3 days", "error_retention": "3 days" } }],
   "triggers": { "crons": ["*/15 * * * *"] },
   "vars": {
     "BRAND": "The Bench Press",

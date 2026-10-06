@@ -13,7 +13,7 @@ import { displayName, page } from "./render.ts";
 import { type Due, due } from "./schedule.ts";
 import { API, get, players, SCHEDULE, sleeper } from "./sleeper.ts";
 import { paidLeague, verify } from "./stripe.ts";
-import { ask, askLater, fillBrief, GAMEDAY_SCHEMA, research, type Spend, templateCopy, weeklyCast } from "./writer.ts";
+import { ask, askLater, fillBrief, GAMEDAY_SCHEMA, research, type Spend, templateCopy } from "./writer.ts";
 
 interface Env {
   DB: D1Database;
@@ -36,8 +36,8 @@ export class RecapWorkflow extends WorkflowEntrypoint<Env, Job> {
     const { league_id, season, week, kind } = event.payload;
     const db = this.env.DB;
     const save = (status: string, doc: J = null) => step.do(`save (${status})`, async () => {
-      await db.prepare("UPDATE recaps SET status = ?, headline = ?, doc = ?, updated_at = CURRENT_TIMESTAMP WHERE league_id = ? AND season = ? AND week = ? AND kind = ?")
-        .bind(status, doc?.copy?.headline ?? null, doc && JSON.stringify(doc), league_id, season, week, kind).run();
+      await db.prepare("UPDATE recaps SET status = ?, headline = ?, dek = ?, doc = ?, updated_at = CURRENT_TIMESTAMP WHERE league_id = ? AND season = ? AND week = ? AND kind = ?")
+        .bind(status, doc?.copy?.headline ?? null, doc?.copy?.dek ?? null, doc && JSON.stringify(slim(doc)), league_id, season, week, kind).run();
       return status;
     });
     const league = await step.do("league", () => db.prepare("SELECT * FROM leagues WHERE league_id = ?").bind(league_id).first<League>());
@@ -66,7 +66,8 @@ export class RecapWorkflow extends WorkflowEntrypoint<Env, Job> {
           .bind(league_id, season, week - 1).first<{ doc: string }>();
         return row ? (({ headline, signoff }) => ({ headline, signoff }))(JSON.parse(row.doc).copy) : null;
       });
-      const [news, newsCost] = await step.do("news", { timeout: "12 minutes" }, () => dayNews(db, client, day, week, season))
+      const [news, newsCost] = await step.do("news", { timeout: "12 minutes" }, () =>
+        sharedNews(db, client, `news:${day}`, `The NFL's ${weekday(day)} games (Week ${week} of the ${season} season) just finished.`))
         .catch(() => [null, null] as [null, null]); // best effort
       const kindOf = [`${facts.teams.length}-team`, facts.scoring, "fantasy football league"].filter(Boolean).join(" ");
       const brief = fillBrief(GAMEDAY, facts, `You write the game-day updates for ${displayName(facts.league)}, a ${kindOf} of friends on Sleeper.`, lore);
@@ -79,17 +80,11 @@ export class RecapWorkflow extends WorkflowEntrypoint<Env, Job> {
       }
     }
 
-    // The weekly recap: research, draft, punch-up. Any failure falls back a step, so the numbers always ship.
+    // The weekly recap: the week's shared news, a draft, a punch-up. Any failure falls back a step, so the numbers always ship.
     const earlier = await step.do("earlier", () => copies(db, league_id, season, week, "weekly"));
-    const [news, researchCost] = await step.do("research", { timeout: "8 minutes" }, async () => {
-      try {
-        return await research(client.withOptions({ timeout: 300_000, maxRetries: 1 }), `NFL Week ${week} of the ${season} season just finished.`, weeklyCast(facts));
-      } catch (err) {
-        console.warn(`skipped the web research (${err})`);
-        return [null, null] as [null, null];
-      }
-    });
-    const costs: (Spend | null)[] = [researchCost];
+    const [news, newsCost] = await step.do("news", { timeout: "12 minutes" }, () => weekNews(db, client, season, week))
+      .catch(() => [null, null] as [null, null]); // best effort
+    const costs: (Spend | null)[] = [newsCost];
     const brief = fillBrief(WRITER, facts, league.intro, lore);
     let copy: J;
     try {
@@ -131,10 +126,12 @@ async function copies(db: D1Database, league: string, season: string, week: numb
 
 const SEARCHING = "\u0000searching";
 
-/** One web search per game day, shared by every league: the day's big plays and memes. The cron queues every league at
- *  once, so the first to arrive claims the search and the rest wait for it rather than each paying for their own. */
-async function dayNews(db: D1Database, client: Anthropic, day: string, week: number, season: string): Promise<[string | null, Spend | null]> {
-  const key = `news:${day}`;
+/** A stored recap leaves out what only the writer needed: the lineups, about half of a week's facts. */
+const slim = (doc: J): J => (doc?.facts?.lineups ? { ...doc, facts: { ...doc.facts, lineups: undefined } } : doc);
+
+/** One web search shared by every league (a game day's big plays and memes, or a week's): the first league to need it
+ *  claims the search, the rest wait for it rather than each paying for their own (the cron queues every league at once). */
+async function sharedNews(db: D1Database, client: Anthropic, key: string, when: string): Promise<[string | null, Spend | null]> {
   const claimed = (await db.prepare("INSERT OR IGNORE INTO cache (key, value) VALUES (?, ?)").bind(key, SEARCHING).run()).meta.changes;
   if (!claimed) {
     for (let i = 0; i < 40; i++) { // up to ~7 minutes; a search takes one to three
@@ -142,16 +139,27 @@ async function dayNews(db: D1Database, client: Anthropic, day: string, week: num
       if (hit && hit.value !== SEARCHING) return [hit.value || null, null]; // another league paid for this one
       await new Promise((r) => setTimeout(r, 10_000));
     }
-    return [null, null]; // ponytail: a search that died mid-claim leaves this day without news; clear its cache row to retry
+    return [null, null]; // ponytail: a search that died mid-claim leaves this without news; clear its cache row to retry
   }
   let news: string | null = null, cost: Spend | null = null;
   try {
-    [news, cost] = await research(client.withOptions({ timeout: 300_000, maxRetries: 1 }), `The NFL's ${weekday(day)} games (Week ${week} of the ${season} season) just finished.`, new Map(), 10);
+    [news, cost] = await research(client.withOptions({ timeout: 300_000, maxRetries: 1 }), when, new Map(), 10);
   } catch (err) {
-    console.warn(`no news for ${day} (${err})`);
+    console.warn(`no news for ${key} (${err})`);
   }
   await db.prepare("UPDATE cache SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?").bind(news ?? "", key).run();
   return [news, cost];
+}
+
+/** A week's news for its recap: the week's game-day briefs, already searched and shared, or (if any is missing) one
+ *  shared search for the whole week. Nothing is searched per league. */
+async function weekNews(db: D1Database, client: Anthropic, season: string, week: number): Promise<[string | null, Spend | null]> {
+  const dates = [...new Set<string>((await get(SCHEDULE(season), [])).filter((x: J) => x.week === week).map((x: J) => x.date))].sort();
+  const briefs = await Promise.all(dates.map((d) => db.prepare("SELECT value FROM cache WHERE key = ?").bind(`news:${d}`).first<{ value: string }>()));
+  if (dates.length && briefs.every((b) => b?.value && b.value !== SEARCHING)) {
+    return [dates.map((d, i) => `${weekday(d)}:\n${briefs[i]!.value}`).join("\n\n"), null];
+  }
+  return sharedNews(db, client, `news:week:${season}-${week}`, `NFL Week ${week} of the ${season} season just finished.`);
 }
 
 /** Queue recaps that aren't written yet. A recap's row is claimed first, so each one runs once however often this is called. */
@@ -203,8 +211,22 @@ async function findOrAdd(env: Env, id: string): Promise<League | null> {
   return find();
 }
 
-const html = (body: string, status = 200, maxAge = 60) =>
-  new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8", "cache-control": `public, max-age=${maxAge}` } });
+const html = (body: string, status = 200, maxAge = 60) => new Response(body, { status, headers: {
+  "content-type": "text/html; charset=utf-8", "cache-control": `public, max-age=${maxAge}`,
+  "x-content-type-options": "nosniff", "referrer-policy": "strict-origin-when-cross-origin", "content-security-policy": "frame-ancestors 'none'",
+} });
+
+/** Once a day: drop what visitors and failures leave behind, so storage grows only with paid leagues' recaps (about
+ *  0.5 MB a league a season). Previews and unpaid leagues come back on the next visit. */
+async function tidy(db: D1Database) {
+  await db.batch([
+    db.prepare("DELETE FROM recaps WHERE kind = 'preview' AND updated_at < datetime('now', '-14 days')"),
+    db.prepare("UPDATE recaps SET status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE status = 'pending' AND updated_at < datetime('now', '-2 days')"),
+    db.prepare("DELETE FROM recaps WHERE status IN ('failed', 'skipped') AND updated_at < datetime('now', '-30 days')"),
+    db.prepare("DELETE FROM cache WHERE key LIKE 'news:%' AND updated_at < datetime('now', '-21 days')"),
+    db.prepare("DELETE FROM leagues WHERE paid_via IS NULL AND created_at < datetime('now', '-30 days') AND league_id NOT IN (SELECT league_id FROM recaps)"),
+  ]);
+}
 
 /** An unpaid league: its latest finished week with plain labels (no Claude, so it costs nothing), and the pass. */
 async function preview(env: Env, site: Site, row: League): Promise<Response> {
@@ -217,7 +239,7 @@ async function preview(env: Env, site: Site, row: League): Promise<Response> {
     const facts = await build(sleeper(row.league_id, env.DB), week);
     doc = JSON.stringify({ facts, copy: templateCopy(facts) });
     await env.DB.prepare("INSERT OR REPLACE INTO recaps (league_id, season, week, kind, status, headline, doc) VALUES (?, ?, ?, 'preview', 'done', ?, ?)")
-      .bind(row.league_id, row.season, week, JSON.parse(doc).copy.headline, doc).run();
+      .bind(row.league_id, row.season, week, JSON.parse(doc).copy.headline, JSON.stringify(slim(JSON.parse(doc)))).run();
   }
   const d = JSON.parse(doc), home = `${site.origin}/${row.slug}/`;
   return html(finish(page(SHELL, d.facts, d.copy, `${home}${row.season}/${week}/`, [d], home,
@@ -238,7 +260,7 @@ async function leaguePage(env: Env, site: Site, key: string, season?: string, we
   if (!row.paid_via) return preview(env, site, row);
   const home = `${site.origin}/${row.slug}/`;
   // Every post, newest first: within a week the Tuesday recap comes after its game days.
-  const posts = (await env.DB.prepare(`SELECT season, week, kind, headline, json_extract(doc, '$.copy.dek') AS dek FROM recaps
+  const posts = (await env.DB.prepare(`SELECT season, week, kind, headline, dek FROM recaps
       WHERE league_id = ? AND status = 'done' AND kind != 'preview' ORDER BY week DESC, kind = 'weekly' DESC, kind DESC`)
     .bind(row.league_id).all<Post>()).results;
   // The week switcher: every week with a page, headed by its recap or, on a live week, its newest update.
@@ -282,7 +304,7 @@ export default {
         return id ? Response.redirect(`${url.origin}/${id}`, 302)
           : html(messagePage(SHELL, site, "That's not a league link", "Paste the link to your league from Sleeper. It has a long number in it, like sleeper.com/leagues/1234567890/team."), 400);
       }
-      if (path === "/robots.txt") return new Response("User-agent: *\nAllow: /\n");
+      if (path === "/robots.txt") return new Response("User-agent: *\nDisallow: /go\nDisallow: /paid\nDisallow: /stripe/\n");
       if (path === "/paid") { // Stripe's Payment Link sends buyers here with ?session={CHECKOUT_SESSION_ID}
         const row = await env.DB.prepare("SELECT slug FROM leagues WHERE paid_via = ?").bind(url.searchParams.get("session") ?? "").first<{ slug: string }>();
         if (row) return Response.redirect(`${url.origin}/${row.slug}/`, 302);
@@ -298,14 +320,17 @@ export default {
     }
   },
 
-  // Every 15 minutes: refresh the player list once a day, then queue whatever's due for every active league.
+  // Every 15 minutes: once a day refresh the player list and tidy storage, then queue whatever's due for every active league.
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
     const state = await get(`${API}/state/nfl`);
     if (state.season_type !== "regular") return; // ponytail: fantasy seasons live in the regular season
     const season = String(state.season);
     ctx.waitUntil((async () => {
       const row = await env.DB.prepare("SELECT updated_at FROM cache WHERE key = 'players'").first<{ updated_at: string }>();
-      if (!row || Date.now() - Date.parse(`${row.updated_at.replace(" ", "T")}Z`) > 20 * 3600e3) await players(env.DB, true);
+      if (!row || Date.now() - Date.parse(`${row.updated_at.replace(" ", "T")}Z`) > 20 * 3600e3) {
+        await players(env.DB, true);
+        await tidy(env.DB);
+      }
     })());
     const jobs = due(await get(SCHEDULE(season), []), Date.now());
     if (jobs.length) console.log(`queued ${await enqueue(env, season, jobs)} recaps (due: ${jobs.map((j) => `${j.week}:${j.kind}`).join(", ")})`);

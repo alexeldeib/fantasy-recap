@@ -72,15 +72,6 @@ export async function research(client: Anthropic, when: string, who: Map<string,
   return [msg!.content.filter((b) => b.type === "text").map((b) => b.text).join("").trim() || null, spend("research", usages)];
 }
 
-/** The players a weekly recap's research covers: every starter, plus benched players who scored big. */
-export function weeklyCast(facts: J): Map<string, string> {
-  const who = new Map<string, string>();
-  for (const [team, lineup] of Object.entries<J>(facts.lineups)) {
-    for (const x of [...lineup.started, ...lineup.bench.filter((b: J) => b.pts >= 15)]) if (!who.has(x.player)) who.set(x.player, team);
-  }
-  return who;
-}
-
 /** One structured-output call. Throws on anything but a clean finish, so the workflow step can retry it. */
 export async function ask(client: Anthropic, system: string, payload: J, schema: object = SCHEMA,
   effort: "low" | "medium" | "high" = "high", step = "write"): Promise<[J, string, Spend]> {

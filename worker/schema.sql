@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS recaps (
   kind TEXT NOT NULL,
   status TEXT NOT NULL,               -- pending, done, failed, skipped
   headline TEXT,
-  doc TEXT,                           -- {"facts": ..., "copy": ...}
+  dek TEXT,                           -- for the feed, without parsing every doc
+  doc TEXT,                           -- {"facts": ..., "copy": ..., "cost": ...}; facts without the lineups
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (league_id, season, week, kind)
 );
