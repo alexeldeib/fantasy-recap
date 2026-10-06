@@ -23,6 +23,8 @@ test("webhook: a signed, fresh, paid checkout activates its league; anything els
   assert.equal(await verify(body, await sign(body, now - 600), SECRET, now), null, "replayed after 10 minutes");
   assert.equal(await verify(body, null, SECRET, now), null, "unsigned");
   assert.equal(paidLeague({ ...event, data: { object: { ...event.data.object, payment_status: "unpaid" } } }), null);
+  assert.deepEqual(paidLeague({ ...event, data: { object: { ...event.data.object, payment_status: "no_payment_required" } } }),
+    { leagueId: "1393873211271188480", session: "cs_test_1" }, "a 100%-off promotion code");
   assert.equal(paidLeague({ ...event, data: { object: { ...event.data.object, client_reference_id: "x; drop table" } } }), null);
   assert.equal(paidLeague({ type: "charge.refunded" }), null);
 });

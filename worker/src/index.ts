@@ -24,6 +24,8 @@ interface Env {
   PRICE: string;
   PAYMENT_LINK: string; // a Stripe Payment Link; the league ID rides along as client_reference_id
   EXAMPLE: string; // slug of a league to show off on the landing page
+  ORIGIN: string; // the canonical address, e.g. https://thebenchpress.app
+  LEGACY_HOSTS: Record<string, string>; // older hostnames -> a path on ORIGIN
 }
 interface Job { league_id: string; season: string; week: number; kind: string }
 interface League { league_id: string; slug: string; name: string; season: string; paid_via: string | null; intro: string; lore: string }
@@ -295,6 +297,8 @@ export default {
         return new Response("ok");
       }
       if (req.method !== "GET" && req.method !== "HEAD") return new Response("Method not allowed", { status: 405 });
+      const legacy = env.LEGACY_HOSTS?.[url.hostname]; // (after the webhook: Stripe doesn't follow redirects)
+      if (legacy !== undefined) return Response.redirect(`${env.ORIGIN}${legacy}${legacy && path === "/" ? "/" : path}${url.search}`, 301);
       if (path === "/") {
         const ex = env.EXAMPLE && await env.DB.prepare("SELECT name FROM leagues WHERE slug = ? LIMIT 1").bind(env.EXAMPLE).first<{ name: string }>();
         return html(landing(SHELL, site, ex ? { slug: env.EXAMPLE, name: displayName(ex.name) } : undefined), 200, 300);

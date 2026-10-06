@@ -2,7 +2,7 @@
 
 Any Sleeper league, one address: `https://<host>/<league>`. Paste a league link to see a free preview of your latest week, buy a season pass, and the recaps write themselves: the full recap every Tuesday morning, plus a quick hit after every NFL game day. No accounts, no apps; the league's page is the product.
 
-Production: https://recaps.alexeldeib.xyz (a Workers custom domain; Cloudflare manages its DNS record and certificate), with Double Dipper and La Liga mirrored as examples. Payments run on Stripe test mode (the Ace Eldeib sandbox) until it's flipped to live.
+Production: **https://thebenchpress.app** (a Workers custom domain; Cloudflare manages its DNS record and certificate). Older addresses redirect there, paths and all (`LEGACY_HOSTS` in `wrangler.jsonc`): recaps.alexeldeib.xyz, and double-dip.alexeldeib.xyz, Double Dipper's GitHub-era site. Double Dipper runs here, comped; La Liga is mirrored from its GitHub site as an example. Payments run on Stripe test mode (the Ace Eldeib sandbox) until it's flipped to live.
 
 ## How it works
 
@@ -43,9 +43,9 @@ The Workers Paid plan ($5 a month) is required: building a week's facts takes mo
 
 ### Going live with Stripe
 
-Test mode uses a sandbox Payment Link and webhook endpoint (`plink_1UNN0lGQzLQ7kipMPanxaF6C`, `we_1UNN0lGQzLQ7kipMkmaokOm6`). There are no Stripe API keys in the app, so going live is three changes:
+Test mode uses a sandbox Payment Link and webhook endpoint (`plink_1UNO8eGQzLQ7kipMUQdFElix` at $25, `we_1UNN0lGQzLQ7kipMkmaokOm6`), with promotion codes allowed and a test code, `FREESEASON26` (100% off, 25 uses, until Feb 15, 2027). There are no Stripe API keys in the app, so going live is three changes:
 
-1. In the live account, create the same product, price, Payment Link (same `/paid` redirect) and webhook endpoint.
+1. In the live account, create the same product, $25 price, Payment Link (redirect to `https://thebenchpress.app/paid?session={CHECKOUT_SESSION_ID}`, promotion codes allowed) and webhook endpoint (`https://thebenchpress.app/stripe/webhook`). Recreate any free-season codes there too.
 2. Put the live Payment Link in `PAYMENT_LINK`, deploy, and `npx wrangler secret put STRIPE_WEBHOOK_SECRET` with the live endpoint's signing secret.
 3. Turn off the leagues test payments turned on: `UPDATE leagues SET paid_via = NULL WHERE paid_via LIKE 'cs_test_%'`.
 
@@ -57,7 +57,7 @@ npx wrangler workflows instances list recap           # recent recap runs
 npx wrangler d1 execute fantasy-recap --remote --command "SELECT slug, season, paid_via FROM leagues WHERE paid_via IS NOT NULL"
 ```
 
-- **Comp a league:** visit `/<league id>` once, then `UPDATE leagues SET paid_via = 'comp' WHERE slug = '<slug>'`.
+- **Comp a league** (yours, friends, prizes): `node scripts/comp.ts <Sleeper league link or ID>`; `--off` undoes it. For giveaways at scale, make a 100%-off promotion code in Stripe instead: the commissioner checks out as usual and pays $0 (the webhook accepts `no_payment_required`). A league ID is one season, so either way a comp lasts a season.
 - **Write or redo one recap now:** `node scripts/queue.ts <league id> 2026 5 weekly` (or `day-2026-10-04`). Works for any league, including showcases, and costs a Claude call or three. Game-day facts are computed as of the end of that day, so a late or backfilled update still tells the story as it stood.
 - **League lore:** `UPDATE leagues SET lore = '["Last year''s champion is @someone."]' WHERE slug = '<slug>'`
 - **Mirror a GitHub-hosted site:** `node scripts/import-site.ts ../../double-dipper double-dipper > import.sql`, then execute it with `--remote --file import.sql`. `showcase` leagues are shown and never written; import with `comp` to hand a league over to the hosted version.

@@ -5,8 +5,13 @@
   "compatibility_date": "2026-09-30",
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
-  // Production. Cloudflare makes the DNS record and certificate on deploy; move to the product's own domain later.
-  "routes": [{ "pattern": "recaps.alexeldeib.xyz", "custom_domain": true }],
+  // Production on thebenchpress.app. The older addresses stay attached and redirect (see LEGACY_HOSTS); Cloudflare makes
+  // each one's DNS record and certificate on deploy.
+  "routes": [
+    { "pattern": "thebenchpress.app", "custom_domain": true },
+    { "pattern": "recaps.alexeldeib.xyz", "custom_domain": true },
+    { "pattern": "double-dip.alexeldeib.xyz", "custom_domain": true }
+  ],
   "workers_dev": false,
   // Static files (the home-screen icon iMessage shows beside links) are served before the Worker runs.
   "assets": { "directory": "./public" },
@@ -19,8 +24,12 @@
   "triggers": { "crons": ["*/15 * * * *"] },
   "vars": {
     "BRAND": "The Bench Press",
-    "PRICE": "$39",
-    "PAYMENT_LINK": "https://buy.stripe.com/test_cNifZh3Wf9xa8Gnf7i1sQ00",
-    "EXAMPLE": "double-dipper"
+    "PRICE": "$25",
+    "PAYMENT_LINK": "https://buy.stripe.com/test_fZu3cv50j10E2hZ3oA1sQ01",
+    "EXAMPLE": "double-dipper",
+    "ORIGIN": "https://thebenchpress.app",
+    // Older addresses -> a path on ORIGIN (a 301 that keeps the rest of the path): the hosted version's first home, and
+    // Double Dipper's GitHub-era site, whose link lives in that league's group chat.
+    "LEGACY_HOSTS": { "recaps.alexeldeib.xyz": "", "double-dip.alexeldeib.xyz": "/double-dipper" }
   }
 }
