@@ -113,28 +113,34 @@ export function fillBrief(brief: string, facts: J, intro = "", lore: string[] = 
 }
 
 /** The Batch API version of ask(), for the weekly recap's long calls: submitted, slept on, collected. Half price, and no
- *  connection is held open for the minutes a high-effort draft takes. No server-side fallback here (Batches reject it);
- *  a refusal throws, and the caller falls back to the draft or plain labels. */
+ *  connection is held open for the minutes a high-effort draft takes. A batch that errors or expires is resubmitted up to
+ *  twice, 20 minutes apart. No server-side fallback here (Batches reject it): a refusal throws, and the caller falls back
+ *  to the draft or plain labels. */
 export async function askLater(step: WorkflowStep, client: Anthropic, name: string, system: string, payload: J,
   schema: object = SCHEMA, effort: "low" | "medium" | "high" = "high"): Promise<[J, string, Spend]> {
-  const id = await step.do(`${name}: submit`, async () => (await client.messages.batches.create({
-    requests: [{ custom_id: name.replace(/[^\w-]/g, "-"), params: {
-      model: MODEL, max_tokens: 128000, system, messages: [{ role: "user", content: JSON.stringify(payload) }],
-      output_config: { effort, format: { type: "json_schema", schema: schema as Record<string, unknown> } },
-    } }],
-  })).id);
-  for (let i = 0; ; i++) { // most finish in minutes; the API's ceiling is 24 hours
-    await step.sleep(`${name}: wait ${i}`, i < 10 ? "30 seconds" : "2 minutes");
-    if (await step.do(`${name}: check ${i}`, async () => (await client.messages.batches.retrieve(id)).processing_status === "ended")) break;
-    if (i > 750) throw new NonRetryableError(`${name}: batch ${id} still running after a day`);
-  }
-  return step.do(`${name}: collect`, async () => {
-    for await (const r of await client.messages.batches.results(id)) {
-      if (r.result.type !== "succeeded") throw new NonRetryableError(`${name}: batch request ${r.result.type}`);
-      const msg = r.result.message;
-      if (msg.stop_reason !== "end_turn") throw new NonRetryableError(`${name}: stop_reason=${msg.stop_reason}`);
-      return [JSON.parse(msg.content.filter((b) => b.type === "text").map((b) => b.text).join("")), msg.model, spend(name, [msg.usage], 0.5)] as [J, string, Spend];
+  for (let attempt = 0; ; attempt++) {
+    const id = await step.do(`${name}: submit ${attempt}`, async () => (await client.messages.batches.create({
+      requests: [{ custom_id: name.replace(/[^\w-]/g, "-"), params: {
+        model: MODEL, max_tokens: 128000, system, messages: [{ role: "user", content: JSON.stringify(payload) }],
+        output_config: { effort, format: { type: "json_schema", schema: schema as Record<string, unknown> } },
+      } }],
+    })).id);
+    for (let i = 0; ; i++) { // most finish in minutes; the API's ceiling is 24 hours
+      await step.sleep(`${name}: wait ${attempt}.${i}`, i < 10 ? "30 seconds" : "2 minutes");
+      if (await step.do(`${name}: check ${attempt}.${i}`, async () => (await client.messages.batches.retrieve(id)).processing_status === "ended")) break;
+      if (i > 750) throw new NonRetryableError(`${name}: batch ${id} still running after a day`);
     }
-    throw new NonRetryableError(`${name}: batch ${id} came back empty`);
-  });
+    const out = await step.do(`${name}: collect ${attempt}`, async () => {
+      for await (const r of await client.messages.batches.results(id)) {
+        if (r.result.type !== "succeeded") return null; // errored or expired: worth another try
+        const msg = r.result.message;
+        if (msg.stop_reason !== "end_turn") throw new NonRetryableError(`${name}: stop_reason=${msg.stop_reason}`);
+        return [JSON.parse(msg.content.filter((b) => b.type === "text").map((b) => b.text).join("")), msg.model, spend(name, [msg.usage], 0.5)] as [J, string, Spend];
+      }
+      return null;
+    });
+    if (out) return out;
+    if (attempt >= 2) throw new NonRetryableError(`${name}: batch failed three times`);
+    await step.sleep(`${name}: back off ${attempt}`, "20 minutes");
+  }
 }

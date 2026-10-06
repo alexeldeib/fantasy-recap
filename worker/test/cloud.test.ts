@@ -39,4 +39,8 @@ test("schedule: game-day updates as each day finishes, the recap Tuesday morning
   assert.deepEqual(later("2026-10-06T04:00:00Z"), ["day-2026-10-04", "day-2026-10-05"], "Monday night: Monday's update joins");
   assert.deepEqual(later("2026-10-06T13:00:00Z"), ["day-2026-10-04", "day-2026-10-05", "weekly"], "Tuesday 9am Eastern: the recap");
   assert.deepEqual(later("2026-10-12T00:00:00Z"), [], "a week later, nothing for week 4 is due anymore");
+  // Monday night never finishes (postponed): no Monday update, and the recap waits a day instead of forever.
+  const stuck = (iso: string) => due(sched, Date.parse(iso)).filter((d) => d.week === 4).map((d) => d.kind);
+  assert.deepEqual(stuck("2026-10-06T13:00:00Z"), ["day-2026-10-04"], "Tuesday: no recap yet with a game unfinished");
+  assert.deepEqual(stuck("2026-10-07T13:00:00Z"), ["weekly"], "Wednesday: the recap goes out anyway");
 });

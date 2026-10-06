@@ -30,7 +30,7 @@ interface Env {
 interface Job { league_id: string; season: string; week: number; kind: string }
 interface League { league_id: string; slug: string; name: string; season: string; paid_via: string | null; intro: string; lore: string }
 
-const LLM = { retries: { limit: 2, delay: "1 minute", backoff: "exponential" }, timeout: "20 minutes" } as const;
+const LLM = { retries: { limit: 3, delay: "2 minutes", backoff: "exponential" }, timeout: "20 minutes" } as const; // rides out ~15 minutes of API trouble
 const RESERVED = new Set(["go", "stripe", "api", "admin", "about", "pricing", "robots-txt", "favicon-ico"]);
 
 export class RecapWorkflow extends WorkflowEntrypoint<Env, Job> {
@@ -48,7 +48,8 @@ export class RecapWorkflow extends WorkflowEntrypoint<Env, Job> {
     const sl = sleeper(league_id, db);
     let facts: J;
     try {
-      facts = await step.do("facts", { retries: { limit: 3, delay: "2 minutes", backoff: "exponential" }, timeout: "5 minutes" }, async () => {
+      // Retries back off for about two hours, so a Sleeper outage on Tuesday morning delays the recap instead of losing it.
+      facts = await step.do("facts", { retries: { limit: 6, delay: "2 minutes", backoff: "exponential" }, timeout: "5 minutes" }, async () => {
         if (!pairs(await sl.matchups(week, [])).length) return null; // no games this week: a bye, or the league's season is over
         return day ? buildDay(sl, week, day) : build(sl, week);
       });
@@ -309,6 +310,15 @@ export default {
           : html(messagePage(SHELL, site, "That's not a league link", "Paste the link to your league from Sleeper. It has a long number in it, like sleeper.com/leagues/1234567890/team."), 400);
       }
       if (path === "/robots.txt") return new Response("User-agent: *\nDisallow: /go\nDisallow: /paid\nDisallow: /stripe/\n");
+      if (path === "/health") { // for a monitor: 503 when anything failed, shipped without jokes, or stuck lately
+        const h = await env.DB.prepare(`SELECT
+            COUNT(CASE WHEN status = 'failed' AND updated_at > datetime('now', '-1 day') THEN 1 END) AS failed,
+            COUNT(CASE WHEN status = 'done' AND kind = 'weekly' AND updated_at > datetime('now', '-1 day') AND json_extract(doc, '$.copy.by') = 'template' THEN 1 END) AS plain,
+            COUNT(CASE WHEN status = 'pending' AND updated_at < datetime('now', '-6 hours') THEN 1 END) AS stuck
+          FROM recaps WHERE kind != 'preview'`).first<{ failed: number; plain: number; stuck: number }>();
+        const ok = !h!.failed && !h!.plain && !h!.stuck;
+        return Response.json({ ok, ...h }, { status: ok ? 200 : 503, headers: { "cache-control": "no-store" } });
+      }
       if (path === "/paid") { // Stripe's Payment Link sends buyers here with ?session={CHECKOUT_SESSION_ID}
         const row = await env.DB.prepare("SELECT slug FROM leagues WHERE paid_via = ?").bind(url.searchParams.get("session") ?? "").first<{ slug: string }>();
         if (row) return Response.redirect(`${url.origin}/${row.slug}/`, 302);

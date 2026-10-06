@@ -1,0 +1,14 @@
+name: Health
+
+# Every 6 hours, ask the hosted version whether any recap failed, shipped with plain labels, or got stuck in the last day.
+# A failed check is a failed scheduled run, and GitHub emails you about those: alerting with no extra service.
+on:
+  schedule:
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - run: curl -sS --fail-with-body https://thebenchpress.app/health
