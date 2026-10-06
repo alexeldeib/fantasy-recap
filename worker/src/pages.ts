@@ -33,6 +33,11 @@ export const EXTRA_CSS = `<style>
 .day .dek { max-width: 46ch; }
 .day > .pen { justify-self: start; margin: 16px 0 22px 6px; } /* the marker is rotated: give it room above the scores */
 .lead-copy .dek, .day .dek { grid-area: auto; margin-top: 0; } /* the recap's wide layout moves .dek into its own grid area */
+/* Score bugs: the same width at every league size (4 games, 5, 6, 7...), as many per row as fit, a short last row left as
+   is. The recap template stretches leftovers to fill a row, which only looks right for 10 teams; its spans need !important
+   to undo (they're more specific). */
+.bugs { grid-template-columns: repeat(auto-fill, minmax(min(100%, 21rem), 1fr)); }
+.bugs > * { grid-column: auto !important; }
 .live .sb-top .chip { background: var(--pen); color: var(--chalk); }
 .sb-left { padding: 6px 14px 12px 60px; color: var(--chalk-3); font-size: .9rem; line-height: 1.35; }
 .earlier-list { display: grid; gap: 14px; min-width: 0; }
@@ -118,7 +123,7 @@ function dayBody(doc: J, headline: boolean): string {
   const bugs = f.games.map((x: J) => `<article class="sb live"><h3 class="sr">${e(x.a.team)} vs ${e(x.b.team)}</h3>`
     + `<p class="sb-top"><span class="chip">${x.final ? "Final" : "Live"}</span><span>Game ${x.key}</span>`
     + `<span class="sb-m">${x.final ? `+${fixed(x.margin, 2)}` : ""}</span></p>`
-    + row(x.a, x.a.pts >= x.b.pts) + row(x.b, x.b.pts > x.a.pts)
+    + row(x.a, x.a.pts > x.b.pts) + row(x.b, x.b.pts > x.a.pts) // a tie (say, 0-0 before kickoff) lights neither side
     + (lines[x.key] ? `<p class="sb-line">${litAt(lines[x.key]!)}</p>` : "") + "</article>").join("");
   return `<div class="day">${headline ? `<h3 class="day-h">${e(c.headline || `${f.day_name} update`)}</h3>` : ""}`
     + (c.dek ? `<p class="dek">${litAt(c.dek)}</p>` : "") + note(c, 1) + `<div class="bugs">${bugs}</div>`
