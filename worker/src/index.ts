@@ -2,13 +2,15 @@
 // recap (with retries), and a Stripe webhook that turns a league on. Leagues and recaps live in D1.
 import Anthropic from "@anthropic-ai/sdk";
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
-import SHELL from "../../fantasy_recap/templates/page.html";
-import PUNCHUP from "../../fantasy_recap/prompts/punchup.md";
-import WRITER from "../../fantasy_recap/prompts/writer.md";
+import SHELL from "./page.html";
 import GAMEDAY from "./prompts/gameday.md";
+import PUNCHUP from "./prompts/punchup.md";
+import WRITER from "./prompts/writer.md";
+import { editor } from "./editor.ts";
 import { build, type J, pairs } from "./facts.ts";
 import { buildDay, weekday, worthPosting } from "./live.ts";
-import { dayPage, dayTail, feedPage, feedStrip, finish, fine, landing, messagePage, type Post, previewBanner, type Site, waitingPage } from "./pages.ts";
+import { dayPage, dayTail, feedPage, feedStrip, finish, fine, html, landing, messagePage, paidPage, type Post, previewBanner, type Site, termsPage,
+  waitingPage } from "./pages.ts";
 import { displayName, page } from "./render.ts";
 import { type Due, due } from "./schedule.ts";
 import { API, get, players, SCHEDULE, sleeper } from "./sleeper.ts";
@@ -27,16 +29,19 @@ interface Env {
   ORIGIN: string; // the canonical address, e.g. https://thebenchpress.app
   LEGACY_HOSTS: Record<string, string>; // older hostnames -> a path on ORIGIN
 }
-interface Job { league_id: string; season: string; week: number; kind: string }
-interface League { league_id: string; slug: string; name: string; season: string; paid_via: string | null; intro: string; lore: string }
+interface Job { league_id: string; season: string; week: number; kind: string; delay?: number } // delay: seconds before it starts
+interface League {
+  league_id: string; slug: string; name: string; season: string; paid_via: string | null; intro: string; lore: string; edit_key: string | null;
+}
 
 const LLM = { retries: { limit: 3, delay: "2 minutes", backoff: "exponential" }, timeout: "20 minutes" } as const; // rides out ~15 minutes of API trouble
-const RESERVED = new Set(["go", "stripe", "api", "admin", "about", "pricing", "robots-txt", "favicon-ico"]);
+const RESERVED = new Set(["go", "stripe", "api", "admin", "about", "pricing", "terms", "paid", "health", "robots-txt", "favicon-ico"]);
 
 export class RecapWorkflow extends WorkflowEntrypoint<Env, Job> {
   async run(event: WorkflowEvent<Job>, step: WorkflowStep) {
-    const { league_id, season, week, kind } = event.payload;
+    const { league_id, season, week, kind, delay } = event.payload;
     const db = this.env.DB;
+    if (delay) await step.sleep("stagger", delay * 1000);
     const save = (status: string, doc: J = null) => step.do(`save (${status})`, async () => {
       await db.prepare("UPDATE recaps SET status = ?, headline = ?, dek = ?, doc = ?, updated_at = CURRENT_TIMESTAMP WHERE league_id = ? AND season = ? AND week = ? AND kind = ?")
         .bind(status, doc?.copy?.headline ?? null, doc?.copy?.dek ?? null, doc && JSON.stringify(slim(doc)), league_id, season, week, kind).run();
@@ -174,8 +179,11 @@ async function enqueue(env: Env, season: string, jobs: Due[], only?: string): Pr
   const claimed = await env.DB.batch(want.map((j) =>
     env.DB.prepare("INSERT OR IGNORE INTO recaps (league_id, season, week, kind, status) VALUES (?, ?, ?, ?, 'pending')").bind(j.league_id, j.season, j.week, j.kind)));
   const fresh = want.filter((_, i) => claimed[i]!.meta.changes);
+  // ponytail: 2 seconds apart keeps a burst under Sleeper's 1,000 requests a minute (a weekly recap makes about 20): 30
+  // leagues a minute, so 300 leagues take 10 minutes. Spread them wider, or cache more of Sleeper, past that.
   for (let i = 0; i < fresh.length; i += 100) {
-    await env.RECAP.createBatch(fresh.slice(i, i + 100).map((params) => ({ id: `${params.league_id}-${params.season}-${params.week}-${params.kind}`, params })));
+    await env.RECAP.createBatch(fresh.slice(i, i + 100).map((params, j) =>
+      ({ id: `${params.league_id}-${params.season}-${params.week}-${params.kind}`, params: { ...params, delay: 2 * (i + j) } })));
   }
   return fresh.length;
 }
@@ -184,7 +192,10 @@ async function enqueue(env: Env, season: string, jobs: Due[], only?: string): Pr
 async function activate(env: Env, leagueId: string, session: string) {
   const row = await findOrAdd(env, leagueId);
   if (!row) return console.error(`paid for ${leagueId}, which isn't a Sleeper football league (checkout ${session}): refund it`);
-  await env.DB.prepare("UPDATE leagues SET paid_via = ? WHERE league_id = ? AND (paid_via IS NULL OR paid_via = 'showcase')").bind(session, leagueId).run();
+  await env.DB.batch([ // the editor key is the commissioner's login; /paid shows it
+    env.DB.prepare("UPDATE leagues SET paid_via = ? WHERE league_id = ? AND (paid_via IS NULL OR paid_via = 'showcase')").bind(session, leagueId),
+    env.DB.prepare("UPDATE leagues SET edit_key = COALESCE(edit_key, ?) WHERE league_id = ?").bind(crypto.randomUUID().replaceAll("-", ""), leagueId),
+  ]);
   const week = Number((await get(`${API}/league/${leagueId}`)).settings.last_scored_leg || 0);
   if (week) await enqueue(env, row.season, [{ week, kind: "weekly" }], leagueId);
 }
@@ -195,7 +206,8 @@ const slugify = (name: string): string => {
   return !s ? "league" : /^\d+$/.test(s) ? `league-${s}` : s; // all digits would read as a league ID
 };
 
-/** A league's row, adding it (with a fresh slug, or last season's) the first time anyone looks it up. */
+/** A league's row, adding it the first time anyone looks it up. A renewed league (Sleeper gives each season a new ID) keeps
+ *  last season's address, writer's notes and editor link, and a comp carries over; a paid season doesn't. */
 async function findOrAdd(env: Env, id: string): Promise<League | null> {
   const find = () => env.DB.prepare("SELECT * FROM leagues WHERE league_id = ?").bind(id).first<League>();
   const row = await find();
@@ -203,21 +215,30 @@ async function findOrAdd(env: Env, id: string): Promise<League | null> {
   const lg = await get(`${API}/league/${id}`, null);
   if (!lg || lg.sport !== "nfl") return null;
   const prev = lg.previous_league_id
-    ? await env.DB.prepare("SELECT slug FROM leagues WHERE league_id = ?").bind(lg.previous_league_id).first<{ slug: string }>() : null;
+    ? await env.DB.prepare("SELECT * FROM leagues WHERE league_id = ?").bind(lg.previous_league_id).first<League>() : null;
   let slug = prev?.slug;
   for (let i = 1; !slug; i++) { // ponytail: check-then-insert; two leagues claiming one name in the same second could share it
     const s = i === 1 ? slugify(lg.name) : `${slugify(lg.name)}-${i}`;
     if (!RESERVED.has(s) && !(await env.DB.prepare("SELECT 1 FROM leagues WHERE slug = ? LIMIT 1").bind(s).first())) slug = s;
   }
-  await env.DB.prepare("INSERT OR IGNORE INTO leagues (league_id, slug, name, season, previous_league_id) VALUES (?, ?, ?, ?, ?)")
-    .bind(id, slug, lg.name, String(lg.season), lg.previous_league_id ?? null).run();
+  await env.DB.prepare(`INSERT OR IGNORE INTO leagues (league_id, slug, name, season, previous_league_id, paid_via, intro, lore, edit_key)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(id, slug, lg.name, String(lg.season), lg.previous_league_id ?? null,
+    prev?.paid_via === "comp" ? "comp" : null, prev?.intro ?? "", prev?.lore ?? "[]", prev?.edit_key ?? null).run();
   return find();
 }
 
-const html = (body: string, status = 200, maxAge = 60) => new Response(body, { status, headers: {
-  "content-type": "text/html; charset=utf-8", "cache-control": `public, max-age=${maxAge}`,
-  "x-content-type-options": "nosniff", "referrer-policy": "strict-origin-when-cross-origin", "content-security-policy": "frame-ancestors 'none'",
-} });
+/** Comped leagues that Sleeper renewed for this season: add the new league, which inherits the comp (findOrAdd). Sleeper
+ *  links seasons only backwards (previous_league_id), so look through the commissioners' leagues for this season's. */
+async function renewComps(env: Env, season: string) {
+  const { results } = await env.DB.prepare(`SELECT league_id FROM leagues l WHERE paid_via = 'comp' AND season < ?
+    AND NOT EXISTS (SELECT 1 FROM leagues n WHERE n.previous_league_id = l.league_id)`).bind(season).all<{ league_id: string }>();
+  for (const { league_id } of results) {
+    for (const u of (await get(`${API}/league/${league_id}/users`, [])).filter((u: J) => u.is_owner)) {
+      const next = (await get(`${API}/user/${u.user_id}/leagues/nfl/${season}`, [])).find((l: J) => l.previous_league_id === league_id);
+      if (next && await findOrAdd(env, next.league_id)) break;
+    }
+  }
+}
 
 /** Once a day: drop what visitors and failures leave behind, so storage grows only with paid leagues' recaps (about
  *  0.5 MB a league a season). Previews and unpaid leagues come back on the next visit. */
@@ -297,6 +318,8 @@ export default {
         if (paid) await activate(env, paid.leagueId, paid.session); // a throw here returns 500, and Stripe retries
         return new Response("ok");
       }
+      const m = path.match(/^\/([a-z0-9-]{1,64})(?:\/(feed|edit)|\/(\d{4})\/(\d{1,2}))?\/?$/);
+      if (m?.[2] === "edit" && env.LEGACY_HOSTS?.[url.hostname] === undefined) return await editor(req, env.DB, site, SHELL, m[1]!); // the one form that POSTs
       if (req.method !== "GET" && req.method !== "HEAD") return new Response("Method not allowed", { status: 405 });
       const legacy = env.LEGACY_HOSTS?.[url.hostname]; // (after the webhook: Stripe doesn't follow redirects)
       if (legacy !== undefined) return Response.redirect(`${env.ORIGIN}${legacy}${legacy && path === "/" ? "/" : path}${url.search}`, 301);
@@ -309,7 +332,8 @@ export default {
         return id ? Response.redirect(`${url.origin}/${id}`, 302)
           : html(messagePage(SHELL, site, "That's not a league link", "Paste the link to your league from Sleeper. It has a long number in it, like sleeper.com/leagues/1234567890/team."), 400);
       }
-      if (path === "/robots.txt") return new Response("User-agent: *\nDisallow: /go\nDisallow: /paid\nDisallow: /stripe/\n");
+      if (path === "/robots.txt") return new Response("User-agent: *\nDisallow: /go\nDisallow: /paid\nDisallow: /stripe/\nDisallow: /*/edit\n");
+      if (path === "/terms") return html(termsPage(SHELL, site), 200, 3600);
       if (path === "/health") { // for a monitor: 503 when anything failed, shipped without jokes, or stuck lately
         const h = await env.DB.prepare(`SELECT
             COUNT(CASE WHEN status = 'failed' AND updated_at > datetime('now', '-1 day') THEN 1 END) AS failed,
@@ -319,15 +343,15 @@ export default {
         const ok = !h!.failed && !h!.plain && !h!.stuck;
         return Response.json({ ok, ...h }, { status: ok ? 200 : 503, headers: { "cache-control": "no-store" } });
       }
-      if (path === "/paid") { // Stripe's Payment Link sends buyers here with ?session={CHECKOUT_SESSION_ID}
-        const row = await env.DB.prepare("SELECT slug FROM leagues WHERE paid_via = ?").bind(url.searchParams.get("session") ?? "").first<{ slug: string }>();
-        if (row) return Response.redirect(`${url.origin}/${row.slug}/`, 302);
+      if (path === "/paid") { // Stripe's Payment Link sends buyers here with ?session={CHECKOUT_SESSION_ID}, which only they know
+        const row = await env.DB.prepare("SELECT slug, name, edit_key FROM leagues WHERE paid_via = ? AND edit_key IS NOT NULL")
+          .bind(url.searchParams.get("session") ?? "").first<{ slug: string; name: string; edit_key: string }>();
+        if (row) return html(paidPage(SHELL, site, row), 200, 0, true);
         return html(messagePage(SHELL, site, "Payment received", "Setting up your league now. This page checks again in a few seconds.")
           .replace("</head>", '<meta http-equiv="refresh" content="4"></head>'), 200, 0); // the webhook can trail the redirect by a moment
       }
-      const m = path.match(/^\/([a-z0-9-]{1,64})(?:\/(feed)|\/(\d{4})\/(\d{1,2}))?\/?$/);
       if (!m) return html(messagePage(SHELL, site, "Page not found", "Nothing lives at that address."), 404);
-      return await leaguePage(env, site, m[1]!, m[3], m[4] ? Number(m[4]) : undefined, !!m[2]);
+      return await leaguePage(env, site, m[1]!, m[3], m[4] ? Number(m[4]) : undefined, m[2] === "feed");
     } catch (err) {
       console.error(err);
       return html(messagePage(SHELL, site, "Fumble", "Something broke on our end. Try again in a minute."), 500, 0);
@@ -344,6 +368,7 @@ export default {
       if (!row || Date.now() - Date.parse(`${row.updated_at.replace(" ", "T")}Z`) > 20 * 3600e3) {
         await players(env.DB, true);
         await tidy(env.DB);
+        await renewComps(env, season);
       }
     })());
     const jobs = due(await get(SCHEDULE(season), []), Date.now());

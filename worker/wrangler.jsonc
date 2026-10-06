@@ -16,7 +16,7 @@
   "workers_dev": false,
   // Static files (the home-screen icon iMessage shows beside links) are served before the Worker runs.
   "assets": { "directory": "./public" },
-  // The recap template and prompts are shared with the Python engine (../fantasy_recap), imported as text.
+  // The page template and the prompts, imported as text.
   "rules": [{ "type": "Text", "globs": ["**/*.md", "**/*.html"], "fallthrough": true }],
   "d1_databases": [{ "binding": "DB", "database_name": "fantasy-recap", "database_id": "950baf12-b478-44c9-bcc1-ddfdfe6764d0" }],
   // A run's step-by-step history (facts and all) is kept for days, not the default month; the recap itself lives in D1.
@@ -26,7 +26,7 @@
   "vars": {
     "BRAND": "The Bench Press",
     "PRICE": "$25",
-    "PAYMENT_LINK": "https://buy.stripe.com/test_fZu3cv50j10E2hZ3oA1sQ01",
+    "PAYMENT_LINK": "https://buy.stripe.com/fZu3cv50j10E2hZ3oA1sQ01", // live; the test-mode link is test_fZu3cv50j10E2hZ3oA1sQ01
     "EXAMPLE": "double-dipper",
     "ORIGIN": "https://thebenchpress.app",
     // Older addresses -> a path on ORIGIN (a 301 that keeps the rest of the path): the hosted version's first home, and

@@ -1,6 +1,7 @@
 // The hosted version's own logic: webhook signatures and what's due when.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { apply, fields } from "../src/editor.ts";
 import { due } from "../src/schedule.ts";
 import { paidLeague, verify } from "../src/stripe.ts";
 import { replay } from "./replay.ts";
@@ -43,4 +44,17 @@ test("schedule: game-day updates as each day finishes, the recap Tuesday morning
   const stuck = (iso: string) => due(sched, Date.parse(iso)).filter((d) => d.week === 4).map((d) => d.kind);
   assert.deepEqual(stuck("2026-10-06T13:00:00Z"), ["day-2026-10-04"], "Tuesday: no recap yet with a game unfinished");
   assert.deepEqual(stuck("2026-10-07T13:00:00Z"), ["weekly"], "Wednesday: the recap goes out anyway");
+});
+
+test("editor: a form changes only lines the copy already has", () => {
+  const copy = { by: "claude-opus-5-5", headline: "OLD", dek: "d", pen_notes: ["SEE ME"], story: ["p1", "p2"],
+    power_lines: [{ key: "Mr. T's Team", line: "y" }], award_lines: [{ key: "high", line: "x" }] };
+  const form: [string, string][] = [["headline", " NEW \r\n"], ["story.1", "P2"], ["story.5", "added?"], ["award_lines.high", "X"],
+    ["award_lines.low", "added?"], ["power_lines.Mr. T's Team", "Y"], ["by", "me"], ["news", "spam"], ["key", "the key"], ["__proto__.x", "1"]];
+  assert.deepEqual(apply(copy, form), { ...copy, headline: "NEW", story: ["p1", "P2"],
+    power_lines: [{ key: "Mr. T's Team", line: "Y" }], award_lines: [{ key: "high", line: "X" }] });
+  assert.equal(copy.headline, "OLD", "the stored copy isn't touched until it's saved");
+  assert.deepEqual(fields({ awards: [{ key: "high", label: "Top score" }] }, copy).map(([name, label]) => `${name}=${label}`),
+    ["headline=Headline", "dek=Dek, the line under the headline", "pen_notes.0=Red marker note 1 (22 characters at most)",
+      "story.0=Rundown, paragraph 1", "story.1=Rundown, paragraph 2", "power_lines.Mr. T's Team=Power rankings: Mr. T's Team", "award_lines.high=Trophy: Top score"]);
 });

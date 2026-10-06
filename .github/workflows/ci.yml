@@ -8,38 +8,23 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.11" # the oldest the engine supports
-      - run: pip install . # installed, not run from the checkout, so a missing template or prompt fails here
-      - run: python tests/test_engine.py
-
-  worker:
-    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: worker
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.13"
-      - run: pip install ..  # the Python engine: the parity tests check the port against it
       - uses: actions/setup-node@v6
         with:
           node-version: 24
       - run: npm ci
       - run: npm test
-        env:
-          PYTHON: python
       - run: npx wrangler types && npx tsc --noEmit
 
-  # Production: main deploys itself once both test jobs pass. Needs two repo secrets, CLOUDFLARE_API_TOKEN (the "Edit
-  # Cloudflare Workers" template plus D1 edit) and CLOUDFLARE_ACCOUNT_ID; until they exist, the deploy step is skipped.
+  # Production: main deploys itself once the tests pass, database migrations first. Needs two repo secrets,
+  # CLOUDFLARE_API_TOKEN (the "Edit Cloudflare Workers" template plus D1 edit) and CLOUDFLARE_ACCOUNT_ID; until the token
+  # exists, these steps are skipped.
   deploy:
-    needs: [test, worker]
+    needs: test
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     concurrency: deploy
@@ -55,6 +40,9 @@ jobs:
         with:
           node-version: 24
       - run: npm ci --ignore-scripts # the token is in this job's environment: no install scripts
-      - name: Deploy to recaps.alexeldeib.xyz
+      - name: Apply database migrations
+        if: env.CLOUDFLARE_API_TOKEN != ''
+        run: npx wrangler d1 migrations apply fantasy-recap --remote
+      - name: Deploy to thebenchpress.app
         if: env.CLOUDFLARE_API_TOKEN != ''
         run: npx wrangler deploy

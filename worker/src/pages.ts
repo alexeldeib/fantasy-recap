@@ -2,7 +2,7 @@
 // They reuse the recap template's look (its CSS tokens and components); EXTRA_CSS adds the few new pieces.
 import type { J } from "./facts.ts";
 import { weekday } from "./live.ts";
-import { bumper, displayName, fill, fit, litAt, SCRIBBLE } from "./render.ts";
+import { bumper, displayName, fill, fit, litAt, SCRIBBLE, stageLabel } from "./render.ts";
 import { esc as e, first, fixed, words } from "./py.ts";
 
 export interface Site { brand: string; origin: string; price: string; payLink: string }
@@ -77,6 +77,13 @@ export const EXTRA_CSS = `<style>
 .post .sum-h { padding-right: 16px; }
 .post .sum-h span { color: var(--chalk-2); font-size: .95rem; letter-spacing: 0; line-height: 1.45; }
 .post.recap .sum-day { background: var(--volt); }
+.ed-form { display: grid; gap: 18px; max-width: 46rem; }
+.ed-form label { display: grid; gap: 6px; color: var(--chalk); font-weight: 700; }
+.ed-form label span { color: var(--chalk-3); font-weight: 400; font-size: .9rem; }
+.ed-form textarea { width: 100%; font: 500 1rem/1.45 var(--f-tv); color: var(--chalk); background: var(--ink-2); border: 1px solid var(--line);
+  border-bottom: 3px solid var(--volt); border-radius: 0; padding: 10px 12px; resize: vertical; field-sizing: content; }
+.ed-form .btn, .fine-print { justify-self: start; }
+.fine-print a, .fine a { color: inherit; }
 </style>`;
 
 /** Every page: the extra styles, a football favicon, and no link-preview image (the hosted version doesn't draw one yet). */
@@ -101,6 +108,13 @@ export const finish = (html: string): string => html
   .replace('content="summary_large_image"', 'content="summary"')
   .replace(/font-size='90'>[^<]*</, "font-size='90'>🏈<");
 
+/** A page response. `priv` is for pages that carry a private link: never cached, never sent on as a referrer. */
+export const html = (body: string, status = 200, maxAge = 60, priv = false) => new Response(body, { status, headers: {
+  "content-type": "text/html; charset=utf-8", "cache-control": priv ? "no-store" : `public, max-age=${maxAge}`,
+  "x-content-type-options": "nosniff", "referrer-policy": priv ? "no-referrer" : "strict-origin-when-cross-origin",
+  "content-security-policy": "frame-ancestors 'none'", ...(priv && { "x-robots-tag": "noindex" }),
+} });
+
 const avatar = (t: J, team: string) => (t?.avatar
   ? `<img class="av" src="${e(t.avatar)}" alt="" width="34" height="34" loading="lazy" decoding="async">`
   : `<span class="av" aria-hidden="true">${e(first(team).toUpperCase())}</span>`);
@@ -120,11 +134,15 @@ function dayBody(doc: J, headline: boolean): string {
     return `<p class="sb-row${lead ? " win" : ""}">${avatar(who.get(s.team), s.team)}<span class="sb-t" style="--n:${fit(s.team)}">${e(s.team)}</span>`
       + `<b class="sb-s">${fixed(s.pts, 2)}</b></p><p class="sb-left">${e(left)}${s.left ? ` · ${s.win_pct}% to win` : ""}</p>`;
   };
-  const bugs = f.games.map((x: J) => `<article class="sb live"><h3 class="sr">${e(x.a.team)} vs ${e(x.b.team)}</h3>`
-    + `<p class="sb-top"><span class="chip">${x.final ? "Final" : "Live"}</span><span>Game ${x.key}</span>`
-    + `<span class="sb-m">${x.final ? `+${fixed(x.margin, 2)}` : ""}</span></p>`
-    + row(x.a, x.a.pts > x.b.pts) + row(x.b, x.b.pts > x.a.pts) // a tie (say, 0-0 before kickoff) lights neither side
-    + (lines[x.key] ? `<p class="sb-line">${litAt(lines[x.key]!)}</p>` : "") + "</article>").join("");
+  const bugs = f.games.map((x: J) => {
+    const st = x.stage, [a, b] = st?.leg === 2 ? [st.a_total, st.b_total] : [x.a.pts, x.b.pts]; // a second leg is about the total
+    return `<article class="sb live"><h3 class="sr">${e(x.a.team)} vs ${e(x.b.team)}</h3>`
+      + `<p class="sb-top"><span class="chip">${!x.final ? "Live" : st?.leg === 1 ? "Leg 1" : "Final"}</span><span>${st ? e(stageLabel(st)) : `Game ${x.key}`}</span>`
+      + `<span class="sb-m">${x.final ? `+${fixed(x.margin, 2)}` : ""}</span></p>`
+      + row(x.a, a > b) + row(x.b, b > a) // a tie (say, 0-0 before kickoff) lights neither side
+      + (st?.leg === 2 ? `<p class="sb-left">Two-week total: ${e(x.a.team)} ${fixed(a, 2)}, ${e(x.b.team)} ${fixed(b, 2)}</p>` : "")
+      + (lines[x.key] ? `<p class="sb-line">${litAt(lines[x.key]!)}</p>` : "") + "</article>";
+  }).join("");
   return `<div class="day">${headline ? `<h3 class="day-h">${e(c.headline || `${f.day_name} update`)}</h3>` : ""}`
     + (c.dek ? `<p class="dek">${litAt(c.dek)}</p>` : "") + note(c, 1) + `<div class="bugs">${bugs}</div>`
     + (c.signoff ? `<p class="pen signoff">${e(c.signoff)}${SCRIBBLE}</p>` : "") + "</div>";
@@ -165,7 +183,7 @@ export function dayPage(shell: string, docs: J[], site: Site, url: string, home:
     description: e(c.dek || ""), image: "", image_alt: "", url: e(url), brand: e(displayName(league)), body }));
 }
 
-const mast = (mark: string, league: string, sub: string, nav = "") => `<header class="mast"><div class="mast-in"><p class="mark" aria-hidden="true">${e(mark)}</p>`
+export const mast = (mark: string, league: string, sub: string, nav = "") => `<header class="mast"><div class="mast-in"><p class="mark" aria-hidden="true">${e(mark)}</p>`
   + `<p class="brand"><b>${e(league)}</b><span>${e(sub)}</span></p>${nav}</div></header>`;
 
 /** The recap pages' week switcher (same markup as render.ts page()), for pages it doesn't draw. */
@@ -183,7 +201,7 @@ function weekNav(weeks: J[], season: string, week: number, home: string): string
 /** One post in the league's feed: a weekly recap, or a game-day update. */
 export interface Post { season: string; week: number; kind: string; headline: string | null; dek?: string | null }
 export const postUrl = (home: string, p: Post) => `${home}${p.season}/${p.week}/${p.kind === "weekly" ? "" : `#${p.kind.slice(4)}`}`;
-const postDay = (p: Post) => (p.kind === "weekly" ? "Recap" : weekday(p.kind.slice(4)).slice(0, 3));
+export const postDay = (p: Post) => (p.kind === "weekly" ? "Recap" : weekday(p.kind.slice(4)).slice(0, 3));
 
 /** The "Latest" strip under the masthead: the newest posts across weeks, so every page is one tap from what's new. */
 export function feedStrip(posts: Post[], home: string, week?: number): string {
@@ -208,12 +226,12 @@ export function feedPage(shell: string, site: Site, league: { name: string; seas
     image: "", image_alt: "", url: e(`${home}feed`), brand: e(displayName(name)), body }));
 }
 
-const foot = (league: string, archive: string, site: Site) => `<footer class="foot">`
+export const foot = (league: string, archive: string, site: Site) => `<footer class="foot">`
   + (archive ? `<nav aria-labelledby="arc-h"><h2 id="arc-h" class="foot-h">Previously on ${e(league)}</h2><ul class="archive">${archive}</ul></nav>` : "")
   + `<p class="fine">${fine(site)}</p></footer>`;
 
 export const fine = (site: Site) => `Numbers from Sleeper. Jokes from Claude. A recap every Tuesday morning, quick hits after every game day. `
-  + `<a href="${site.origin}/">Get ${e(site.brand)} for your league</a>. Not affiliated with Sleeper.`;
+  + `<a href="${site.origin}/">Get ${e(site.brand)} for your league</a>. Not affiliated with Sleeper. <a href="${site.origin}/terms">Terms</a>.`;
 
 /** The free preview's banner: the numbers are real, the jokes switch on with a season pass. */
 export function previewBanner(site: Site, league: J, leagueId: string): string {
@@ -235,9 +253,9 @@ export function waitingPage(shell: string, site: Site, league: J, leagueId: stri
   return finish(fill(shell, { title: e(`${displayName(name)} · ${site.brand}`), description: e(text), image: "", image_alt: "", url: e(site.origin), brand: e(site.brand), body }));
 }
 
-export function messagePage(shell: string, site: Site, title: string, text: string): string {
+export function messagePage(shell: string, site: Site, title: string, text: string, more = `<p><a class="btn" href="${site.origin}/">Try another league</a></p>`): string {
   const body = mast("?!", site.brand, title) + `<main><section class="seg"><div class="day"><h1 class="day-h">${e(title)}</h1><p class="dek">${e(text)}</p>`
-    + `<p><a class="btn" href="${site.origin}/">Try another league</a></p></div></section></main>` + foot(site.brand, "", site);
+    + `${more}</div></section></main>` + foot(site.brand, "", site);
   return finish(fill(shell, { title: e(`${title} · ${site.brand}`), description: e(text), image: "", image_alt: "", url: e(site.origin), brand: e(site.brand), body }));
 }
 
@@ -267,8 +285,37 @@ export function landing(shell: string, site: Site, example?: { slug: string; nam
     + `<li><p><b>Turn on the jokes</b>One season pass per league. Any manager can buy it.</p></li>`
     + `<li><p><b>Drop the link in the group chat</b>New recap every Tuesday morning, quick hits after every game day.</p></li></ol></section>`
     + `<section class="seg" aria-labelledby="price-h">${bumper("price-h", "Season pass", "Per league, per season")}<div class="day">`
-    + `<p class="price">${e(site.price)}</p><p class="dek">Less than a waiver bid, split across the whole league.</p></div></section>`
+    + `<p class="price">${e(site.price)}</p><p class="dek">Less than a waiver bid, split across the whole league. Not for you? `
+    + `<a href="/terms">A full refund</a> within 7 days.</p></div></section>`
     + `</main>` + foot(site.brand, "", site);
   return finish(fill(shell, { title: e(`${site.brand} · Weekly recaps for Sleeper leagues`), description: e("A weekly recap of your Sleeper fantasy league that reads like a sports column, with game-day updates."),
     image: "", image_alt: "", url: e(site.origin + "/"), brand: e(site.brand), body }));
+}
+
+/** After checkout: the league's link for the group chat, and the commissioner's private editor link. */
+export function paidPage(shell: string, site: Site, lg: { slug: string; name: string; edit_key: string }): string {
+  const home = `${site.origin}/${lg.slug}/`, edit = `${home}edit?key=${lg.edit_key}`;
+  return messagePage(shell, site, "You're in", `${displayName(lg.name)} is on. The recap lands every Tuesday morning, with quick hits after every game day.`,
+    `<p><a class="btn" href="${e(home)}">See your league</a></p><p class="dek">Share <b>${e(home)}</b> in the group chat.</p>`
+    + `<p class="dek">Your private editor link, for fixing any line or adding league lore: <a href="${e(edit)}">${e(edit)}</a>. `
+    + `Bookmark it and keep it to yourself: anyone with it can edit your league's pages.</p>`);
+}
+
+/** /terms: what a season pass is, refunds, privacy and contact, in plain words. */
+export function termsPage(shell: string, site: Site): string {
+  const mail = `support@${new URL(site.origin).hostname}`, link = `<a href="mailto:${mail}">${mail}</a>`;
+  const sec = (id: string, h: string, kicker: string, ps: string[]) => `<section class="seg" aria-labelledby="${id}">${bumper(id, h, kicker)}<div class="day">`
+    + ps.map((p) => `<p class="dek fine-print">${p}</p>`).join("") + "</div></section>";
+  const body = mast("BP", site.brand, "Terms, refunds and privacy") + "<main>"
+    + sec("buy-h", "What you get", "One league, one season", [`A season pass turns on ${e(site.brand)} for one Sleeper league for one NFL season: a recap every Tuesday morning and a quick update after every NFL game day, through the end of that league's season, at one link anyone in the league can open. It's a one-time payment, not a subscription. When Sleeper renews your league next season, that season needs its own pass.`])
+    + sec("refund-h", "Refunds", "No hard feelings", [`Not what you hoped for? Email ${link} within 7 days of buying for a full refund, no questions asked.`,
+      "If a problem on our end stops your league's recaps during the season and we can't fix it, we'll refund the pass in full."])
+    + sec("priv-h", "Privacy", "What we keep", ["We use your league's public Sleeper data (team names, usernames, avatars, rosters and scores) to make its pages, which anyone with the link can read. Stripe handles payments; we never see your card.",
+      `No accounts, no ads, no tracking cookies. To take your league's pages down, email ${link}.`])
+    + sec("fine-h", "The fine print", "Read it once", ["The recaps are written by AI (Claude) from real stats, for laughs. They can get things wrong, and they roast lineup decisions. The commissioner can edit any line.",
+      `${e(site.brand)} isn't affiliated with Sleeper or the NFL. If these terms change, this page has the current version.`])
+    + sec("help-h", "Contact", "A real person answers", [`Questions, refunds, a recap that needs fixing: ${link}.`])
+    + "</main>" + foot(site.brand, "", site);
+  return finish(fill(shell, { title: e(`Terms · ${site.brand}`), description: e(`What a ${site.brand} season pass covers, refunds and privacy.`),
+    image: "", image_alt: "", url: e(`${site.origin}/terms`), brand: e(site.brand), body }));
 }

@@ -1,6 +1,6 @@
 // Game-day facts: where every matchup stands after one NFL game day (Thursday, Sunday, Monday...), for the quick
 // updates between weekly recaps. Same source as the weekly facts; Sleeper's matchup points are live mid-week.
-import { type J, pairs, pointsKey, roster, type Source } from "./facts.ts";
+import { type J, pairs, pointsKey, roster, type Source, stager } from "./facts.ts";
 import { fsum, maxBy, pyround, sortBy } from "./py.ts";
 
 export const weekday = (date: string): string =>
@@ -18,8 +18,10 @@ export async function buildDay(sl: Source, week: number, day: string): Promise<J
   const [lg, users, rosters, P] = await Promise.all([sl.league(), sl.users(), sl.rosters(), sl.players()]);
   const season: string = lg.season, pts_key = pointsKey(lg);
   const { teams, team, slots, info, fits, name } = roster(lg, users, rosters, P);
-  const [matchups, projections, schedule, stats] = await Promise.all(
-    [sl.matchups(week), sl.projections(season, week), sl.schedule(season), sl.stats(season, week)]);
+  const playoffs = week >= (lg.settings.playoff_week_start || 99);
+  const [matchups, projections, schedule, stats, brackets, before] = await Promise.all([sl.matchups(week), sl.projections(season, week),
+    sl.schedule(season), sl.stats(season, week), playoffs ? sl.brackets() : [[], []] as [J[], J[]], playoffs ? sl.matchups(week - 1, []) : []]);
+  const stage = stager(lg.settings, brackets);
   const proj = new Map<string, number>(projections.map((x: J) => [x.player_id, (x.stats || {})[pts_key] || 0]));
   const games: J[] = schedule.filter((x: J) => x.week === week);
   const dates = [...new Set(games.map((x) => x.date as string))].sort();
@@ -57,13 +59,17 @@ export async function buildDay(sl: Source, week: number, day: string): Promise<J
     };
   };
   const out = pairs(ms).map(([ma, mb], i) => {
-    const a = side(ma), b = side(mb);
+    const a = side(ma), b = side(mb), st = stage(week, ma.roster_id, mb.roster_id);
+    const leg1 = (m: J): number => (st?.leg === 2 ? before.find((x: J) => x.roster_id === m.roster_id)?.points ?? 0 : 0); // two-week rounds count both
+    const ta = leg1(ma) + a.pts, tb = leg1(mb) + b.pts;
     const spread = Math.sqrt(sigma(a._later) + sigma(b._later));
-    const pa = spread ? phi((a.proj_final - b.proj_final) / spread) : a.pts > b.pts ? 1 : a.pts < b.pts ? 0 : 0.5;
+    const pa = spread ? phi((leg1(ma) + a.proj_final - (leg1(mb) + b.proj_final)) / spread) : ta > tb ? 1 : ta < tb ? 0 : 0.5;
     const pct = (p: number) => (spread ? Math.min(99, Math.max(1, Math.round(100 * p))) : Math.round(100 * p));
     const { _later: _a, ...sa } = a, { _later: _b, ...sb } = b;
-    return { key: String(i + 1), final: !a.left && !b.left, margin: pyround(Math.abs(a.pts - b.pts), 2),
+    const x: J = { key: String(i + 1), final: !a.left && !b.left, margin: pyround(Math.abs(ta - tb), 2),
       a: { ...sa, win_pct: pct(pa) }, b: { ...sb, win_pct: pct(1 - pa) } };
+    if (st) x.stage = st.leg === 2 ? { ...st, a_total: pyround(ta, 2), b_total: pyround(tb, 2) } : st;
+    return x;
   });
 
   // The day across the league: who carried, who flopped, and which benches hurt.

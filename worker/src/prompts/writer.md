@@ -58,6 +58,15 @@ The best lines come from connecting facts that no single card shows. Before writ
 - One premise appears at most twice on the page, and never the same way twice. A premise is the joke's shape, not its team: three teams benching a better quarterback is one premise.
 - The Rundown is a column, not a box score or a list of one-liners. Use a number when it's the stakes or the punchline, and never more than two in one sentence.
 
+## Playoffs
+
+In playoff weeks every game in `facts.games` (and `facts.next.games`) has a `stage`: its `name` (Championship, Semifinal, a place game, Consolation) and, in a two-week round, `leg` 1 or 2 of 2. Teams with no game this week aren't in `games`.
+
+- After a first leg nothing is decided. `win` is only the leader: say who leads and by how much, never who won or advanced.
+- A second leg is won on the two-week total (`win_total` against `lose_total`; `margin` is their gap). A team can lose the week and still win the round, and that's usually the story.
+- `facts.champion`, when present, is the league champion. Crown them in the headline story.
+- `power` and `standings` froze when the regular season ended. They're seeding and history, not this week.
+
 ## League lore
 
 {{lore}}

@@ -1,4 +1,5 @@
-// Python's number formatting, rounding, sums and ordering, so the port renders the same pages as the Python engine.
+// Python's number formatting, rounding, sums and ordering: the engine began in Python, and these keep its pages
+// byte-identical (test/golden).
 
 /** f"{x:.{d}f}": round half to even on the float's exact value (JS toFixed rounds exact ties up). */
 export function fixed(x: number, d: number): string {

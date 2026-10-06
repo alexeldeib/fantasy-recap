@@ -1,5 +1,5 @@
 // Claude writes the jokes: web research for real plays, a draft, then a punch-up pass. Structured JSON out.
-// The weekly recap mirrors fantasy_recap/writer.py; the game-day update is new here.
+// The weekly recap's prompts (prompts/writer.md, punchup.md) date from the GitHub-hosted sites; gameday.md is new here.
 import Anthropic from "@anthropic-ai/sdk";
 import type { WorkflowStep } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";

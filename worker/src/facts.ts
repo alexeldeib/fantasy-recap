@@ -1,5 +1,5 @@
-// League data -> facts: games, trophies, gems, standings, power rankings. A line-for-line port of
-// fantasy_recap/facts.py; test/parity.test.ts checks both build the same facts from the same recorded week.
+// League data -> facts: games, trophies, gems, standings, power rankings. Ported line for line from the original Python
+// engine; test/golden.test.ts checks recorded weeks still build exactly the facts that engine built.
 import { first, fixed, fsum, g, maxBy, minBy, pyround, signed, sortBy } from "./py.ts";
 
 export type J = any; // Sleeper's JSON, as it comes
@@ -15,6 +15,7 @@ export interface Source {
   stats(season: string, week: number): Promise<J>;
   projections(season: string, week: number): Promise<J>;
   schedule(season: string): Promise<J>;
+  brackets(): Promise<[J[], J[]]>; // the playoffs' winners and losers brackets
 }
 
 export const FLEX: Record<string, Set<string>> = {
@@ -34,6 +35,26 @@ export function pairs(matchups: J[]): J[][] {
 
 export const ordinal = (n: number): string =>
   `${n}${10 <= n % 100 && n % 100 <= 20 ? "th" : ({ 1: "st", 2: "nd", 3: "rd" } as Record<number, string>)[n % 10] ?? "th"}`;
+
+/** Where a playoff pairing sits in Sleeper's brackets: { name }, plus { leg, legs: 2 } in a two-week round
+ *  (playoff_round_type 1 makes the final round two weeks long, 2 makes every round). Null for any other game. */
+export function stager(cfg: J, [winners, losers]: [J[], J[]]) {
+  const start = Number(cfg.playoff_week_start) || 99, type = Number(cfg.playoff_round_type) || 0;
+  const last = Math.max(0, ...winners.map((m: J) => m.r));
+  const legs = (r: number) => (type === 2 || (type === 1 && r === last) ? 2 : 1);
+  const opens = (r: number) => start + (type === 2 ? 2 * (r - 1) : r - 1);
+  return (week: number, a: number, b: number): J => {
+    for (const [consolation, ms] of [[false, winners], [true, losers]] as const) {
+      const m = ms.find((m: J) => opens(m.r) <= week && week < opens(m.r) + legs(m.r) && [m.t1, m.t2].includes(a) && [m.t1, m.t2].includes(b));
+      if (!m) continue;
+      // ponytail: a losers bracket is a consolation ladder or a toilet bowl depending on settings, so no place names there
+      const name = consolation ? (m.p === 1 ? "Consolation final" : "Consolation") : m.p === 1 ? "Championship"
+        : m.p ? `${ordinal(m.p)}-place game` : m.r === last - 1 ? "Semifinal" : m.r === last - 2 ? "Quarterfinal" : `Playoff round ${m.r}`;
+      return legs(m.r) === 2 ? { name, leg: week - opens(m.r) + 1, legs: 2 } : { name };
+    }
+    return null;
+  };
+}
 
 export const zip = <A, B>(a: A[], b: B[]): [A, B][] => a.slice(0, b.length).map((x, i) => [x, b[i]!]);
 
@@ -146,6 +167,8 @@ export async function build(sl: Source, weekArg?: number | string | null): Promi
   };
 
   const ms: J[] = weekly.get(week)!.filter((m: J) => m.matchup_id);
+  const stage = stager(cfg, week + 1 >= (cfg.playoff_week_start || 99) ? await sl.brackets() : [[], []]);
+  const pointsIn = (w: number, rid: number): number => weekly.get(w)?.find((m: J) => m.roster_id === rid)?.points ?? 0;
   const card = new Map<number, J>(), lineups: Record<string, J> = {};
   for (const m of ms) {
     const rid = m.roster_id, pp = m.players_points, st: string[] = m.starters;
@@ -170,8 +193,12 @@ export async function build(sl: Source, weekArg?: number | string | null): Promi
     };
   }
   const games = pairs(ms).map(([a, b]) => {
-    if (a.points < b.points) [a, b] = [b, a];
-    return { win: card.get(a.roster_id), lose: card.get(b.roster_id), margin: pyround(a.points - b.points, 2) };
+    const st = stage(week, a.roster_id, b.roster_id);
+    const total = (m: J) => m.points + (st?.leg === 2 ? pointsIn(week - 1, m.roster_id) : 0); // a second leg goes to the two-week total
+    if (total(a) < total(b)) [a, b] = [b, a];
+    const x: J = { win: card.get(a.roster_id), lose: card.get(b.roster_id), margin: pyround(total(a) - total(b), 2) };
+    if (st) x.stage = st.leg === 2 ? { ...st, win_total: pyround(total(a), 2), lose_total: pyround(total(b), 2) } : st;
+    return x;
   });
 
   // Trophies: the numbers are picked here; Claude only writes the jokes.
@@ -182,16 +209,19 @@ export async function build(sl: Source, weekArg?: number | string | null): Promi
   const vsProj = (t: J) => (t.proj ? ` (${signed(t.pts - t.proj, 1)} vs proj)` : "");
 
   const ranked = sortBy(card.values(), (t) => -t.pts);
-  const blow = maxBy(games, (x) => x.margin)!, close = minBy(games, (x) => x.margin)!;
-  award("blowout", "💣", "Biggest domination", blow.win.team, `by ${fixed(blow.margin, 2)} over ${blow.lose.team}`);
+  // A first leg decides nothing, and a two-week round's winner didn't win this week's game: they sit out the results trophies.
+  const decided = games.filter((x) => x.stage?.leg !== 1), single = games.filter((x) => !x.stage?.leg);
+  const agg = (x: J) => (x.stage?.leg ? " on aggregate" : "");
+  const blow = maxBy(decided, (x) => x.margin), close = minBy(decided, (x) => x.margin);
+  if (blow) award("blowout", "💣", "Biggest domination", blow.win.team, `by ${fixed(blow.margin, 2)} over ${blow.lose.team}${agg(blow)}`);
   award("high", "🥇", "Top score", ranked[0].team, `${fixed(ranked[0].pts, 2)}${vsProj(ranked[0])}`);
   award("low", "💩", "Biggest loser", ranked.at(-1).team, `${fixed(ranked.at(-1).pts, 2)}${vsProj(ranked.at(-1))}`);
-  award("close", "🤏", "Closest game", close.win.team, `by ${fixed(close.margin, 2)} over ${close.lose.team}`);
-  const flips = games.filter((x) => x.lose.swap && x.lose.swap.gain > x.margin).map((x) => [x.lose.swap.gain - x.margin, x] as [number, J]);
+  if (close) award("close", "🤏", "Closest game", close.win.team, `by ${fixed(close.margin, 2)} over ${close.lose.team}${agg(close)}`);
+  const flips = decided.filter((x) => x.lose.swap && x.lose.swap.gain > x.margin).map((x) => [x.lose.swap.gain - x.margin, x] as [number, J]);
   if (flips.length) {
     const [by, x] = minBy(flips, (f) => f[0])!;
     award("heartbreaker", "💔", "Heartbreaker", x.lose.team,
-      `lost by ${fixed(x.margin, 2)}, one swap from winning by ${fixed(by, 2)}`, swapVs(x.lose.swap));
+      `lost by ${fixed(x.margin, 2)}${agg(x)}, one swap from winning by ${fixed(by, 2)}`, swapVs(x.lose.swap));
   }
   const best = maxBy(ranked, (t) => [t.eff, t.pts]), worst = minBy(ranked, (t) => [t.eff, t.pts]);
   award("best_mgr", "🔥", "Best manager", best.team, `${g(best.eff)}% of max (${fixed(best.opt, 2)})`);
@@ -220,9 +250,9 @@ export async function build(sl: Source, weekArg?: number | string | null): Promi
     [d, p, pid, rid] = minBy(diffs, (x) => x)!;
     award("under", "👎", "Underachiever", team.get(rid)!, `${name(pid)} ${fixed(p, 2)}, ${signed(d, 1)} vs proj`);
   }
-  const lucky = minBy(games.map((x) => x.win), (t) => t.pts), unlucky = maxBy(games.map((x) => x.lose), (t) => t.pts);
-  award("lucky", "🍀", "Lucky", lucky.team, `won with the ${ordinal(ranked.indexOf(lucky) + 1)}-best score`);
-  award("unlucky", "😡", "Unlucky", unlucky.team, `lost with the ${ordinal(ranked.indexOf(unlucky) + 1)}-best score`);
+  const lucky = minBy(single.map((x) => x.win), (t) => t.pts), unlucky = maxBy(single.map((x) => x.lose), (t) => t.pts);
+  if (lucky) award("lucky", "🍀", "Lucky", lucky.team, `won with the ${ordinal(ranked.indexOf(lucky) + 1)}-best score`);
+  if (unlucky) award("unlucky", "😡", "Unlucky", unlucky.team, `lost with the ${ordinal(ranked.indexOf(unlucky) + 1)}-best score`);
 
   // Gems: cross-roster comparisons a model won't reliably compute on its own.
   const gems: string[] = [];
@@ -308,12 +338,19 @@ export async function build(sl: Source, weekArg?: number | string | null): Promi
     const playing = new Set(sched.filter((x: J) => x.week === week + 1).flatMap((x: J) => [x.home, x.away]));
     const lineup = new Map<number, string[]>(rosters.map((r: J) => [r.roster_id, (r.starters || []).filter((p: string) => p !== "0")]));
     const projected = (rid: number) => (nproj.size ? pyround(fsum(lineup.get(rid)!.map((p) => nproj.get(p) ?? 0)), 1) : null);
-    const psa = [...lineup].flatMap(([rid, st]) => st
+    const out = new Set(upcoming.map((m: J) => m.roster_id)); // in the playoffs, only teams still playing
+    const psa = [...lineup].filter(([rid]) => out.has(rid)).flatMap(([rid, st]) => st
       .filter((p) => HURT.has(info(p).injury_status) || (playing.size && !playing.has(info(p).team)))
       .map((p) => ({ team: team.get(rid), player: name(p), status: info(p).injury_status || "no game" })));
-    next = { week: week + 1, psa, games: pairs(upcoming).map(([a, b]) =>
-      ({ a: team.get(a.roster_id), b: team.get(b.roster_id), a_proj: projected(a.roster_id), b_proj: projected(b.roster_id) })) };
+    next = { week: week + 1, psa, games: pairs(upcoming).map(([a, b]) => {
+      const x: J = { a: team.get(a.roster_id), b: team.get(b.roster_id), a_proj: projected(a.roster_id), b_proj: projected(b.roster_id) };
+      const st = stage(week + 1, a.roster_id, b.roster_id);
+      if (st) x.stage = st.leg === 2 ? { ...st, a_leg1: pyround(pointsIn(week, a.roster_id), 2), b_leg1: pyround(pointsIn(week, b.roster_id), 2) } : st;
+      return x;
+    }) };
   }
+
+  const final = games.find((x) => x.stage?.name === "Championship" && x.stage.leg !== 1);
 
   // Power rankings: season all-play win rate, then points for. Movement is vs the week before.
   const order = (w: number) => sortBy([...(snaps.get(w) ?? new Map()).keys()], (rid) => snaps.get(w)!.get(rid)!, true);
@@ -331,5 +368,6 @@ export async function build(sl: Source, weekArg?: number | string | null): Promi
     league: lg.name, season, week, playoff_teams: cfg.playoff_teams ?? null, teams,
     scoring: ({ pts_ppr: "full-PPR", pts_half_ppr: "half-PPR" } as Record<string, string>)[pts_key] ?? "standard",
     power, games, awards, gems, lineups, pickups, standings, next,
+    ...(final && { champion: final.win.team }),
   };
 }

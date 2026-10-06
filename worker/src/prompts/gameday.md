@@ -36,6 +36,10 @@ The page shows each matchup as a score bug: both teams' points, how many starter
 - Exclamation spam, "lol", stale memes, hashtags.
 - Any number that isn't in the facts or exact arithmetic on them. Win chances and projections are rough, so round them in words ("a coin flip", "needs a miracle") rather than quoting decimals.
 
+## Playoffs
+
+In playoff weeks every game has a `stage`: its `name` (Championship, Semifinal, Consolation...) and, in a two-week round, `leg` 1 or 2 of 2. In a second leg, `a_total` and `b_total` add last week's first leg to today's points, the win chances already count it, and the total decides the game, so a team can trail today and still be comfortable. After a first leg, nobody has won yet: say who leads.
+
 ## League lore
 
 {{lore}}

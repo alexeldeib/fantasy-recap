@@ -1,5 +1,5 @@
-// Facts + copy -> the broadcast-style recap page. A line-for-line port of fantasy_recap/render.py page(): with no
-// `extra`, it renders byte-identical HTML (test/parity.test.ts checks).
+// Facts + copy -> the broadcast-style recap page. Ported line for line from the original Python engine: with no
+// `extra`, recorded weeks render the same bytes that engine did (test/golden.test.ts checks).
 import type { J } from "./facts.ts";
 import { esc as e, first, fixed, fsum, g, signed, sortBy, W, words } from "./py.ts";
 
@@ -53,6 +53,9 @@ export const litAt = (s: string): string => lit(s, AT);
 
 /** Widest word, so CSS can shrink a long name instead of breaking it mid-word. */
 export const fit = (name: string): string => fixed(Math.max(...(words(name).length ? words(name) : [""]).map(ems)), 2);
+
+/** A playoff game's name, with its leg in a two-week round: "Championship · leg 1 of 2". */
+export const stageLabel = (st: J): string => (st.leg ? `${st.name} · leg ${st.leg} of ${st.legs}` : st.name);
 
 export const bumper = (hid: string, title: string, kicker: string, pen = ""): string =>
   `<div class="bump"><h2 id="${hid}"><span>${e(title)}</span></h2><p class="bump-k">${e(kicker)}</p>${pen}</div>`;
@@ -134,9 +137,10 @@ export function page(shell: string, f: J, c: J, url: string, data: J[], site: st
 
   const crawlItem = (i: number, x: J) => {
     const quip = lines.game_lines![String(i)];
-    return `<span class="ci"><b class="ci-k">Final</b><span class="ci-t">${e(x.win.team)}</span>`
-      + `<b class="ci-s">${fixed(x.win.pts, 2)}</b><span class="ci-t ci-l">${e(x.lose.team)}</span>`
-      + `<b class="ci-s ci-l">${fixed(x.lose.pts, 2)}</b>${quip ? `<span class=ci-q>${e(quip)}</span>` : ""}</span>`;
+    const two = x.stage?.leg === 2; // a second leg's ticker shows the two-week totals that decided it
+    return `<span class="ci"><b class="ci-k">${x.stage?.leg === 1 ? "Leg 1" : two ? "Agg" : "Final"}</b><span class="ci-t">${e(x.win.team)}</span>`
+      + `<b class="ci-s">${fixed(two ? x.stage.win_total : x.win.pts, 2)}</b><span class="ci-t ci-l">${e(x.lose.team)}</span>`
+      + `<b class="ci-s ci-l">${fixed(two ? x.stage.lose_total : x.lose.pts, 2)}</b>${quip ? `<span class=ci-q>${e(quip)}</span>` : ""}</span>`;
   };
   const reel = f.games.map((x: J, i: number) => crawlItem(i + 1, x)).join("");
   const secs = Math.max(30, Math.floor([...reel.replace(/<[^>]+>/g, "")].length / 8)); // about 65px a second
@@ -203,10 +207,11 @@ export function page(shell: string, f: J, c: J, url: string, data: J[], site: st
     + "</section>";
 
   const games = f.games.map((x: J, n: number) => {
-    const i = n + 1;
-    return `<article class="sb"><h3 class="sr">${e(x.win.team)} beat ${e(x.lose.team)}</h3>`
-      + `<p class="sb-top"><span class="chip">Final</span><span>Game ${i}</span><span class="sb-m">+${fixed(x.margin, 2)}</span></p>`
+    const i = n + 1, st = x.stage; // playoffs: after a first leg the leader only leads; a second leg is won on the total
+    return `<article class="sb"><h3 class="sr">${e(x.win.team)} ${st?.leg === 1 ? "leads" : "beat"} ${e(x.lose.team)}${st?.leg === 2 ? " on aggregate" : ""}</h3>`
+      + `<p class="sb-top"><span class="chip">${st?.leg === 1 ? "Leg 1" : "Final"}</span><span>${st ? e(stageLabel(st)) : `Game ${i}`}</span><span class="sb-m">+${fixed(x.margin, 2)}</span></p>`
       + `${bugRow(x.win.team, x.win.pts, "win", 2)}${bugRow(x.lose.team, x.lose.pts, "lose", 2)}`
+      + (st?.leg === 2 ? `<p class="sb-left">Two-week total: ${fixed(st.win_total, 2)} to ${fixed(st.lose_total, 2)}</p>` : "")
       + `<p class="sb-duel"><span class="k">Top guns</span><span>${e(x.win.top.player)} <b>${fixed(x.win.top.pts, 1)}</b></span>`
       + `<span><i>vs</i>${e(x.lose.top.player)} <b>${fixed(x.lose.top.pts, 1)}</b></span></p>`
       + `${line("game_lines", i, "sb-line")}</article>`;
@@ -221,9 +226,11 @@ export function page(shell: string, f: J, c: J, url: string, data: J[], site: st
       const a = x.a_proj ?? null, b = x.b_proj ?? null;
       const fav = (a || 0) > (b || 0) ? "a" : (b || 0) > (a || 0) ? "b" : "";
       return `<article class="sb pre"><h3 class="sr">${e(x.a)} vs ${e(x.b)}</h3>`
-        + `<p class="sb-top"><span class="chip">Wk ${nx.week}</span><span>Projected</span></p>`
+        + `<p class="sb-top"><span class="chip">Wk ${nx.week}</span><span>${x.stage ? e(stageLabel(x.stage)) : "Projected"}</span></p>`
         + `${bugRow(x.a, a, fav === "a" ? "fav" : "", 1)}`
-        + `${bugRow(x.b, b, fav === "b" ? "fav" : "", 1)}${line("preview_lines", i, "sb-line")}</article>`;
+        + `${bugRow(x.b, b, fav === "b" ? "fav" : "", 1)}`
+        + (x.stage?.leg === 2 ? `<p class="sb-left">Leg 1: ${e(x.a)} ${fixed(x.stage.a_leg1, 2)}, ${e(x.b)} ${fixed(x.stage.b_leg1, 2)}</p>` : "")
+        + `${line("preview_lines", i, "sb-line")}</article>`;
     };
     let psa = (nx.psa || []).map((x: J) => `<li><span class="st">${e(x.status)}</span><span><b>${e(x.player)}</b> in the ${e(x.team)} lineup</span></li>`).join("");
     psa = psa ? `<aside class="psa" aria-labelledby="psa-h"><h3 id="psa-h">Lineup PSA</h3><ul>${psa}</ul></aside>` : "";

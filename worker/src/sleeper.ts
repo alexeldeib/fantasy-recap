@@ -7,10 +7,12 @@ const PROJECTIONS = (season: string, week: number) => `https://api.sleeper.com/p
   + "&position%5B%5D=QB&position%5B%5D=RB&position%5B%5D=WR&position%5B%5D=TE&position%5B%5D=K&position%5B%5D=DEF";
 export const SCHEDULE = (season: string) => `https://api.sleeper.com/schedule/nfl/regular/${season}`;
 
-/** Fetch JSON. Required endpoints throw; optional ones pass a fallback. Sleeper answers an unknown league with null. */
-export async function get(url: string, fallback?: J): Promise<J> {
+/** Fetch JSON. Required endpoints throw; optional ones pass a fallback. Sleeper answers an unknown league with null.
+ *  `ttl` (seconds) lets Cloudflare's cache answer repeats: the NFL-wide data every league in a burst asks for. */
+export async function get(url: string, fallback?: J, ttl = 0): Promise<J> {
   try {
-    const r = await fetch(url, { headers: { "user-agent": "fantasy-recap" } }); // api.sleeper.com 403s requests without one
+    const r = await fetch(url, { headers: { "user-agent": "fantasy-recap" }, // api.sleeper.com 403s requests without one
+      ...(ttl && { cf: { cacheTtl: ttl, cacheEverything: true } }) });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const body = await r.json();
     if (body === null && fallback === undefined) throw new Error("not found");
@@ -44,7 +46,10 @@ export function sleeper(leagueId: string, db?: D1Database): Source {
   return {
     league: () => get(base), users: () => get(`${base}/users`), rosters: () => get(`${base}/rosters`),
     matchups: (week, fallback) => get(`${base}/matchups/${week}`, fallback), transactions: (week) => get(`${base}/transactions/${week}`, []),
-    stats: (season, week) => get(`${API}/stats/nfl/regular/${season}/${week}`, {}), projections: (season, week) => get(PROJECTIONS(season, week), []),
-    schedule: (season) => get(SCHEDULE(season), []), players: () => players(db),
+    // The same 1-2 MB for every league: cached a minute, so a burst of recaps (staggered 2 seconds apart) shares one
+    // request. Not the schedule: its "complete" flags decide what a game-day update counts, and must be fresh.
+    stats: (season, week) => get(`${API}/stats/nfl/regular/${season}/${week}`, {}, 60),
+    projections: (season, week) => get(PROJECTIONS(season, week), [], 60), schedule: (season) => get(SCHEDULE(season), []),
+    players: () => players(db), brackets: () => Promise.all([get(`${base}/winners_bracket`, []), get(`${base}/losers_bracket`, [])]),
   };
 }

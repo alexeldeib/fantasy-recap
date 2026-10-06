@@ -1,3 +1,6 @@
+-- The schema as it stood when migrations began (2026-10-06). Applied with `npx wrangler d1 migrations apply fantasy-recap --remote`;
+-- CI runs it before every deploy. Never edit a migration that has run: add the next number.
+
 -- One row per Sleeper league per season (Sleeper gives a renewed league a new ID each year). A league is "active"
 -- (recaps get written) once paid_via is set; until then anyone can see its free preview.
 CREATE TABLE IF NOT EXISTS leagues (
