@@ -75,10 +75,20 @@ export const EXTRA_CSS = `<style>
 </style>`;
 
 /** Every page: the extra styles, a football favicon, and no link-preview image (the hosted version doesn't draw one yet). */
-const OPEN_LINKED = `<script>addEventListener("DOMContentLoaded", function () { /* a link to a folded game-day update opens it */
-  var d = location.hash && document.getElementById(decodeURIComponent(location.hash.slice(1)));
-  if (d && d.tagName === "DETAILS") { d.open = true; d.scrollIntoView(); }
-});</script>`;
+// A link to a folded game-day update opens it: on arrival, when only the #fragment changes (a link to another update on
+// the same page), and when the same link is tapped again (no hashchange fires for that).
+const OPEN_LINKED = `<script>(function () {
+  function open() {
+    var d = location.hash && document.getElementById(decodeURIComponent(location.hash.slice(1)));
+    if (d && d.tagName === "DETAILS") { d.open = true; d.scrollIntoView(); }
+  }
+  addEventListener("DOMContentLoaded", open);
+  addEventListener("hashchange", open);
+  addEventListener("click", function (e) {
+    var a = e.target.closest && e.target.closest("a[href*='#']");
+    if (a && a.pathname === location.pathname && a.hash === location.hash) setTimeout(open);
+  });
+})();</script>`;
 
 export const finish = (html: string): string => html
   .replace("</head>", `${EXTRA_CSS}${OPEN_LINKED}</head>`)
