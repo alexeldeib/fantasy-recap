@@ -116,13 +116,15 @@ export const html = (body: string, status = 200, maxAge = 60, priv = false) => n
 } });
 
 /** The Content-Security-Policy for every page. Scripts run only by hash (the template's and OPEN_LINKED, both fixed text), so
- *  markup that slipped past escaping couldn't run any; styles may be inline (the template sizes type with style attributes);
- *  fonts come from Google, avatars from Sleeper's CDN. Computed once per isolate. */
+ *  markup that slipped past escaping couldn't run any, plus the beacon Cloudflare Web Analytics (cookieless) injects on this
+ *  zone; styles may be inline (the template sizes type with style attributes); fonts come from Google, avatars from Sleeper's
+ *  CDN. Computed once per isolate. */
 let policy: Promise<string> | undefined;
 export const csp = (shell: string) => (policy ??= (async () => {
   const sha = async (s: string) => btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)))));
   const scripts = await Promise.all([...`${shell}${OPEN_LINKED}`.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => sha(m[1]!)));
-  return ["default-src 'self'", `script-src ${scripts.map((h) => `'sha256-${h}'`).join(" ")}`, "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  return ["default-src 'self'", `script-src ${scripts.map((h) => `'sha256-${h}'`).join(" ")} https://static.cloudflareinsights.com`,
+    "connect-src 'self' https://cloudflareinsights.com", "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src https://fonts.gstatic.com", "img-src 'self' data: https:", "form-action 'self'", "base-uri 'none'", "object-src 'none'",
     "frame-ancestors 'none'"].join("; ");
 })());
