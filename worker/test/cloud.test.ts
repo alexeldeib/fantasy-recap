@@ -89,3 +89,10 @@ test("sleeper: an outage throws (so a step retries); only missing data falls bac
     globalThis.fetch = real;
   }
 });
+
+test("preview: a finished season's league gets no buy button", async () => {
+  const { previewBanner } = await import("../src/pages.ts");
+  const site = { brand: "B", origin: "https://example.com", price: "$25", payLink: "https://buy.stripe.com/x" };
+  assert.match(previewBanner(site, { name: "L", status: "in_season" }, "123456"), /client_reference_id=123456/);
+  assert.doesNotMatch(previewBanner(site, { name: "L", status: "complete" }, "123456"), /buy\.stripe\.com/);
+});
