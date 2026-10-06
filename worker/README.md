@@ -12,7 +12,7 @@ One Cloudflare Worker, one D1 database, one Workflow:
 |---|---|
 | `fetch` (`src/index.ts`) | Pages: `/` (landing), `/<slug>` (latest week), `/<slug>/<season>/<week>`, `/go?league=` (finds a league from any Sleeper link), `/paid` (Stripe's return trip), `/stripe/webhook`. |
 | `scheduled`, every 15 min | Refreshes the NFL player list once a day, then asks `due()` what's owed and queues it for every paid league. |
-| `RecapWorkflow` | One recap: facts → web research → draft → punch-up → save. Each step retries on its own; a failure falls back a step, so the numbers always ship. |
+| `RecapWorkflow` | One recap: facts → web research → draft → punch-up → save. Each step retries on its own; a failure falls back a step, so the numbers always ship. The weekly draft and punch-up go through the Batch API: half price, and a high-effort draft (often over five minutes) never holds a connection open. |
 | D1 (`schema.sql`) | `leagues` (one row per league per season, `paid_via` says whether it's on), `recaps` (every weekly recap, game-day update and preview), `cache` (player list, each game day's news). |
 
 What's due comes from Sleeper's NFL schedule (`src/schedule.ts`): a game-day update once all of a day's games are final, and the weekly recap at 13:00 UTC the day after a week's last game. Thursday, Saturday, holiday and international games need no special cases. A recap's row is claimed before its Workflow starts, so each runs once no matter how often the cron fires.
@@ -65,7 +65,16 @@ npx wrangler d1 execute fantasy-recap --remote --command "SELECT slug, season, p
 
 ## Costs
 
-Per league per season (17 weeks): about $20 to $30 of Claude for the weekly recaps (research, draft and punch-up on Claude Opus 5.5) and about $5 for game-day updates (one pass at medium effort; the day's news search is shared by every league). Cloudflare is $5 a month flat at this scale. At $39 a pass that leaves roughly $5 to $15 a league before Stripe's fee. The levers, in order: run the Tuesday drafts through the Batch API (half price; Tuesday morning isn't urgent), share more of the research across leagues, and try Claude Sonnet 5.5 for game-day updates.
+Every recap saves what its Claude calls cost: `SELECT kind, json_extract(doc, '$.cost.usd') FROM recaps`. Measured on real leagues in week 3 and 4 of 2026, at list prices:
+
+| Recap | Steps | Cost |
+|---|---|---|
+| Weekly (12-team league) | research $0.55, draft $0.48, punch-up $0.66 | $1.69; about $1.10 now that the draft and punch-up go through the Batch API at half price |
+| Game-day update | writing $0.06 to $0.11 | plus that day's news search, $0.41 to $0.60, paid once for every league |
+
+Per league per season (17 weeks, about 51 game days): roughly $19 of weekly recaps and $4 of game-day updates, plus a share of the news searches (about $27 a season in total, split across every league). Cloudflare is $5 a month flat at this scale.
+
+The levers left, biggest first: share the weekly research across leagues instead of searching per league (the day briefs already cover the slate; about $9 a league a season), and try Claude Sonnet 5.5 for game-day updates (about $2). Both trade a little quality, so they're decisions, not defaults.
 
 ## Tests
 

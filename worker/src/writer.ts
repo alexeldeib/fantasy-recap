@@ -1,6 +1,8 @@
 // Claude writes the jokes: web research for real plays, a draft, then a punch-up pass. Structured JSON out.
 // The weekly recap mirrors fantasy_recap/writer.py; the game-day update is new here.
 import Anthropic from "@anthropic-ai/sdk";
+import type { WorkflowStep } from "cloudflare:workers";
+import { NonRetryableError } from "cloudflare:workflows";
 import type { J } from "./facts.ts";
 import { displayName } from "./render.ts";
 
@@ -38,13 +40,14 @@ type Usage = Pick<Anthropic.Usage, "input_tokens" | "output_tokens" | "cache_rea
 };
 export interface Spend { step: string; input: number; output: number; cache_read: number; cache_write: number; searches: number; usd: number }
 
-/** What one step's calls cost, from the usage the API reports. Saved with each recap, so pricing rests on real numbers. */
-export function spend(step: string, usages: Usage[]): Spend {
+/** What one step's calls cost, from the usage the API reports. Saved with each recap, so pricing rests on real numbers.
+ *  `rate` is 0.5 for Batch API calls, which bill at half price. */
+export function spend(step: string, usages: Usage[], rate = 1): Spend {
   const sum = (f: (u: Usage) => number | null | undefined) => usages.reduce((n, u) => n + (f(u) ?? 0), 0);
   const t = { input: sum((u) => u.input_tokens), output: sum((u) => u.output_tokens), cache_read: sum((u) => u.cache_read_input_tokens),
     cache_write: sum((u) => u.cache_creation_input_tokens), searches: sum((u) => u.server_tool_use?.web_search_requests) };
   const usd = t.input * PRICE.input + t.output * PRICE.output + t.cache_read * PRICE.cache_read + t.cache_write * PRICE.cache_write + t.searches * PRICE.search;
-  return { step, ...t, usd: Math.round(usd * 1e4) / 1e4 };
+  return { step, ...t, usd: Math.round(usd * rate * 1e4) / 1e4 };
 }
 
 /** Best effort: web-search real NFL moments (big plays, bloopers, memes), for these players or (no players) the whole slate. */
@@ -116,4 +119,31 @@ export function fillBrief(brief: string, facts: J, intro = "", lore: string[] = 
     : [`The commissioners are the teams with \`commish: true\` (there are ${n}).`];
   const lines = [...lore, ...commish].map((x) => `- ${x}`).join("\n");
   return brief.replaceAll("{{intro}}", () => intro).replaceAll("{{lore}}", () => lines);
+}
+
+/** The Batch API version of ask(), for the weekly recap's long calls: submitted, slept on, collected. Half price, and no
+ *  connection is held open for the minutes a high-effort draft takes. No server-side fallback here (Batches reject it);
+ *  a refusal throws, and the caller falls back to the draft or plain labels. */
+export async function askLater(step: WorkflowStep, client: Anthropic, name: string, system: string, payload: J,
+  schema: object = SCHEMA, effort: "low" | "medium" | "high" = "high"): Promise<[J, string, Spend]> {
+  const id = await step.do(`${name}: submit`, async () => (await client.messages.batches.create({
+    requests: [{ custom_id: name.replace(/[^\w-]/g, "-"), params: {
+      model: MODEL, max_tokens: 128000, system, messages: [{ role: "user", content: JSON.stringify(payload) }],
+      output_config: { effort, format: { type: "json_schema", schema: schema as Record<string, unknown> } },
+    } }],
+  })).id);
+  for (let i = 0; ; i++) { // most finish in minutes; the API's ceiling is 24 hours
+    await step.sleep(`${name}: wait ${i}`, i < 10 ? "30 seconds" : "2 minutes");
+    if (await step.do(`${name}: check ${i}`, async () => (await client.messages.batches.retrieve(id)).processing_status === "ended")) break;
+    if (i > 750) throw new NonRetryableError(`${name}: batch ${id} still running after a day`);
+  }
+  return step.do(`${name}: collect`, async () => {
+    for await (const r of await client.messages.batches.results(id)) {
+      if (r.result.type !== "succeeded") throw new NonRetryableError(`${name}: batch request ${r.result.type}`);
+      const msg = r.result.message;
+      if (msg.stop_reason !== "end_turn") throw new NonRetryableError(`${name}: stop_reason=${msg.stop_reason}`);
+      return [JSON.parse(msg.content.filter((b) => b.type === "text").map((b) => b.text).join("")), msg.model, spend(name, [msg.usage], 0.5)] as [J, string, Spend];
+    }
+    throw new NonRetryableError(`${name}: batch ${id} came back empty`);
+  });
 }

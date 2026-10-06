@@ -13,7 +13,7 @@ import { displayName, page } from "./render.ts";
 import { type Due, due } from "./schedule.ts";
 import { API, get, players, SCHEDULE, sleeper } from "./sleeper.ts";
 import { paidLeague, verify } from "./stripe.ts";
-import { ask, fillBrief, GAMEDAY_SCHEMA, research, type Spend, templateCopy, weeklyCast } from "./writer.ts";
+import { ask, askLater, fillBrief, GAMEDAY_SCHEMA, research, type Spend, templateCopy, weeklyCast } from "./writer.ts";
 
 interface Env {
   DB: D1Database;
@@ -93,11 +93,11 @@ export class RecapWorkflow extends WorkflowEntrypoint<Env, Job> {
     const brief = fillBrief(WRITER, facts, league.intro, lore);
     let copy: J;
     try {
-      const [draft, model, draftCost] = await step.do("draft", LLM, () => ask(client, brief, { facts, previous_weeks: earlier, news }, undefined, "high", "draft"));
+      // Batched: half price, and nothing waits on a connection for the minutes a high-effort draft takes.
+      const [draft, model, draftCost] = await askLater(step, client, "draft", brief, { facts, previous_weeks: earlier, news });
       costs.push(draftCost);
       try {
-        const [final, m, punchCost] = await step.do("punch-up", LLM, () =>
-          ask(client, `${brief}\n\n---\n\n${PUNCHUP}`, { facts, previous_weeks: earlier, news, draft }, undefined, "high", "punch-up"));
+        const [final, m, punchCost] = await askLater(step, client, "punch-up", `${brief}\n\n---\n\n${PUNCHUP}`, { facts, previous_weeks: earlier, news, draft });
         costs.push(punchCost);
         copy = { ...final, by: `${m} (draft + punch-up)`, news };
       } catch {
