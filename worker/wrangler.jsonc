@@ -10,7 +10,8 @@
   "routes": [
     { "pattern": "thebenchpress.app", "custom_domain": true },
     { "pattern": "recaps.alexeldeib.xyz", "custom_domain": true },
-    { "pattern": "double-dip.alexeldeib.xyz", "custom_domain": true }
+    { "pattern": "double-dip.alexeldeib.xyz", "custom_domain": true },
+    { "pattern": "liga.alexeldeib.xyz", "custom_domain": true }
   ],
   "workers_dev": false,
   // Static files (the home-screen icon iMessage shows beside links) are served before the Worker runs.
@@ -29,7 +30,7 @@
     "EXAMPLE": "double-dipper",
     "ORIGIN": "https://thebenchpress.app",
     // Older addresses -> a path on ORIGIN (a 301 that keeps the rest of the path): the hosted version's first home, and
-    // Double Dipper's GitHub-era site, whose link lives in that league's group chat.
-    "LEGACY_HOSTS": { "recaps.alexeldeib.xyz": "", "double-dip.alexeldeib.xyz": "/double-dipper" }
+    // the leagues' GitHub-era sites, whose links live in their group chats.
+    "LEGACY_HOSTS": { "recaps.alexeldeib.xyz": "", "double-dip.alexeldeib.xyz": "/double-dipper", "liga.alexeldeib.xyz": "/la-liga" }
   }
 }
