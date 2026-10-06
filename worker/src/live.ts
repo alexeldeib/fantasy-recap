@@ -90,7 +90,8 @@ export async function buildDay(sl: Source, week: number, day: string): Promise<J
     league: lg.name, season, week, day, day_name: weekday(day), final: !later.length || out.every((x) => x.final),
     next_day: later.length ? weekday(later[0]!) : null, teams,
     scoring: ({ pts_ppr: "full-PPR", pts_half_ppr: "half-PPR" } as Record<string, string>)[pts_key] ?? "standard",
-    games: out, stars, duds, bench_blunders: sortBy(blunders, (x) => -x.gain).slice(0, 3),
+    games: out, stars, duds, bench_blunders: lg.settings.best_ball ? [] : sortBy(blunders, (x) => -x.gain).slice(0, 3), // best ball: no lineup calls
+    ...(lg.settings.best_ball && { best_ball: true }),
   };
 }
 

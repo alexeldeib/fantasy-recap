@@ -4,7 +4,9 @@ Weekly recaps for Sleeper fantasy football leagues that read like a sports colum
 
 Paste a league link and see a free preview of your latest week with your real numbers. A $25 season pass turns on the jokes: the full recap every Tuesday morning (headline, a column called The Rundown, power rankings with a take on every team, fifteen trophies, every score, next week's matchups) and a quick hit after every NFL game day. No accounts, no apps: the league's page is the product, at `thebenchpress.app/<league>`.
 
-Running on it: [Double Dipper](https://thebenchpress.app/double-dipper/) and [La Liga](https://thebenchpress.app/la-liga/), both comped. Their GitHub-era sites ([double-dipper](https://github.com/alexeldeib/double-dipper), [la-liga](https://github.com/alexeldeib/la-liga)) are archived, and their old addresses redirect here, paths and all.
+Running on it: [Double Dipper](https://thebenchpress.app/double-dipper/) and [La Liga](https://thebenchpress.app/la-liga/), both comped. Their GitHub-era sites ([double-dipper](https://github.com/alexeldeib/double-dipper), [la-liga](https://github.com/alexeldeib/la-liga)) are archived.
+
+**Operating it** (refunds, comps, fixing or rewriting a post, takedowns, incidents, secrets, restores): [RUNBOOK.md](RUNBOOK.md).
 
 ## How it works
 
@@ -19,28 +21,15 @@ Everything lives in [`worker/`](worker/): one Cloudflare Worker, one D1 database
 
 What's due comes from Sleeper's NFL schedule (`src/schedule.ts`): a game-day update once all of a day's games are final, and the weekly recap at 13:00 UTC (9am Eastern) the day after a week's last game, or a day later if a game was postponed. Thursday, Saturday, holiday and international games need no special cases. A recap's row is claimed before its Workflow starts, so each one runs once however often the cron fires.
 
-The rest of `src/`: `sleeper.ts` is the only code that talks to Sleeper; `facts.ts` (a week) and `live.ts` (a game day) turn its data into facts, with no network and no AI; `writer.ts` and `prompts/` have Claude write the copy as structured JSON; `render.ts`, `pages.ts` and `page.html` draw the pages; `editor.ts` is the commissioner's editor; `stripe.ts` checks webhook signatures.
+The rest of `src/`: `sleeper.ts` is the only code that talks to Sleeper; `facts.ts` (a week) and `live.ts` (a game day) turn its data into facts, with no network and no AI; `writer.ts` and `prompts/` have Claude write the copy as structured JSON; `render.ts`, `pages.ts` and `page.html` draw the pages; `editor.ts` is the commissioner's editor; `stripe.ts` checks webhook signatures. `scripts/admin.ts` is the operator's tool (see the runbook).
+
+**Best ball** leagues skip the trophies about lineup calls, since Sleeper sets their lineups itself.
 
 **Playoffs** come from Sleeper's brackets: every playoff game carries its name (Championship, Semifinal, a place game, Consolation). In a two-week round (Double Dipper's final, weeks 16 and 17), the first leg's recap only says who leads, and the second leg is won on the two-week total. The results trophies skip what a week didn't decide, and the champion gets crowned.
 
-## Run it
+## Monitoring
 
-```bash
-cd worker
-npx wrangler tail fantasy-recap                       # live logs
-npx wrangler workflows instances list recap           # recent recap runs
-npx wrangler d1 execute fantasy-recap --remote --command "SELECT slug, season, paid_via FROM leagues WHERE paid_via IS NOT NULL"
-curl https://thebenchpress.app/health                 # 503 if anything failed, shipped without jokes, or stuck in the last day
-```
-
-A GitHub Action checks `/health` every 6 hours (`.github/workflows/health.yml`); a failed check emails you.
-
-- **Comp a league** (yours, friends, prizes): `node scripts/comp.ts <Sleeper league link or ID>`. It prints the league's private editor link, and `--off` undoes it. A comp carries over when Sleeper renews the league next season. For giveaways at scale, a 100%-off Stripe promotion code does the same through the normal checkout ($0 checkouts count as paid).
-- **The editor:** each paid or comped league has a private link, `/<slug>/edit?key=...`, shown on the checkout's return page and printed by `comp.ts`. The commissioner can rewrite any line of any post and set the league's intro and lore, which the writer works into later recaps. A lost link: `SELECT slug, edit_key FROM leagues WHERE slug = '<slug>'`.
-- **Write or redo one recap now:** `node scripts/queue.ts <league id> 2026 5 weekly` (or `day-2026-10-04`). It works for any league and costs a Claude call or three. Game-day facts are computed as of the end of that day, so a late or backfilled update still tells the story as it stood.
-- **Refunds:** refund the payment in Stripe, then `UPDATE leagues SET paid_via = NULL WHERE paid_via = '<checkout session id>'`. The policy is on `/terms`: a full refund within 7 days, or any time a problem on our end stops the recaps.
-- **Take a league's pages down:** `DELETE FROM recaps WHERE league_id = '<id>'`, then `DELETE FROM leagues WHERE league_id = '<id>'`.
-- **Mirror a GitHub-hosted site:** `node scripts/import-site.ts ../../double-dipper double-dipper comp > import.sql`, then run it with `--remote --file import.sql`.
+`https://thebenchpress.app/health` answers 503 when any recap failed, shipped without jokes, or got stuck in the last day, and a GitHub Action (`.github/workflows/health.yml`) checks it every 6 hours: a failed check emails you. What to do then is in the [runbook](RUNBOOK.md#the-health-check-failed).
 
 ## Deploys and changes
 
@@ -48,11 +37,15 @@ Push to `main`: CI (`.github/workflows/ci.yml`) runs the tests, applies any new 
 
 A schema change is a new numbered file in `worker/migrations/`. Never edit one that has already run.
 
-Secrets live in Cloudflare, set with `npx wrangler secret put`: `ANTHROPIC_API_KEY` (without it, recaps ship with plain labels and game-day updates are skipped) and `STRIPE_WEBHOOK_SECRET`.
+Secrets live in Cloudflare, set with `npx wrangler secret put`: `ANTHROPIC_API_KEY` (without it, recaps ship with plain labels and game-day updates are skipped) and `STRIPE_WEBHOOK_SECRET`. CI's `CLOUDFLARE_API_TOKEN` is a GitHub repo secret. None are in the repo; rotation is in the [runbook](RUNBOOK.md#secrets).
+
+## Security
+
+There are no accounts. A league's page is public at its slug, and the commissioner's editor sits behind a 128-bit key in a private link. It's shown once after checkout, never cached, kept out of search engines and referrers, and it only edits its own league. The only POST endpoints are the editor and the Stripe webhook, which accepts only events signed with the endpoint's secret within the last five minutes. Every database query binds its values. Everything that reaches a page is escaped, and a Content-Security-Policy lets only the site's own two scripts run (by hash), so markup that slipped past escaping still couldn't run script. CI's GitHub token is read-only, and the deploy job installs without running package scripts.
 
 ## Payments
 
-Stripe is live. The account (Ace Eldeib) has one product, "The Bench Press season pass", at $25, sold through a Payment Link (`plink_1UNOk7GQzLQ7kipMgvSx2FaW`, in `PAYMENT_LINK` in `wrangler.jsonc`). Each league's buy button adds `?client_reference_id=<league id>`. After checkout, Stripe sends the buyer to `/paid?session={CHECKOUT_SESSION_ID}`. The webhook (`we_1UNOk8GQzLQ7kipMA7ct7tsb`, for `checkout.session.completed` and `checkout.session.async_payment_succeeded`) turns the league on and writes its latest week right away. Promotion codes are allowed. A 100%-off code with ten uses is in the dashboard for giveaways. There are no Stripe API keys in the app, only the webhook's signing secret.
+Stripe is live. Refunds, comps and cancellations are in the [runbook](RUNBOOK.md#refunds-and-cancellations). The account (Ace Eldeib) has one product, "The Bench Press season pass", at $25, sold through a Payment Link (`plink_1UNOk7GQzLQ7kipMgvSx2FaW`, in `PAYMENT_LINK` in `wrangler.jsonc`). Each league's buy button adds `?client_reference_id=<league id>`. After checkout, Stripe sends the buyer to `/paid?session={CHECKOUT_SESSION_ID}`. The webhook (`we_1UNOk8GQzLQ7kipMA7ct7tsb`, for `checkout.session.completed` and `checkout.session.async_payment_succeeded`) turns the league on and writes its latest week right away. Promotion codes are allowed. A 100%-off code with ten uses is in the dashboard for giveaways. There are no Stripe API keys in the app, only the webhook's signing secret.
 
 The test-mode setup (the Ace Eldeib sandbox: `plink_1UNO8eGQzLQ7kipMUQdFElix`, `we_1UNN0lGQzLQ7kipMkmaokOm6`, code `FREESEASON26`) is still there for trying changes. To use it, point `PAYMENT_LINK` and `STRIPE_WEBHOOK_SECRET` at it, and afterwards turn off what it turned on: `UPDATE leagues SET paid_via = NULL WHERE paid_via LIKE 'cs_test_%'`.
 

@@ -67,6 +67,10 @@ In playoff weeks every game in `facts.games` (and `facts.next.games`) has a `sta
 - `facts.champion`, when present, is the league champion. Crown them in the headline story.
 - `power` and `standings` froze when the regular season ended. They're seeding and history, not this week.
 
+## Best ball
+
+When `facts.best_ball` is true, Sleeper sets every lineup itself, counting each team's best possible lineup. There are no lineup calls to roast: never joke about benching, starting or sitting anyone. The draft, waivers, trades, depth and luck are all fair game.
+
 ## League lore
 
 {{lore}}

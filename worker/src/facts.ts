@@ -23,6 +23,8 @@ export const FLEX: Record<string, Set<string>> = {
   REC_FLEX: new Set(["WR", "TE"]), WRRB_FLEX: new Set(["WR", "RB"]),
 };
 export const HURT = new Set(["Out", "IR", "Doubtful", "Sus", "PUP", "NA"]);
+/** Trophies about lineup calls. Best ball has none: Sleeper starts each team's best possible lineup itself. */
+const LINEUP_CALLS = new Set(["heartbreaker", "best_mgr", "worst_mgr", "best_bench", "bench_mvp"]);
 export const STATS: [string, string][] = [["pass_yd", "pass yds"], ["pass_td", "pass TD"], ["pass_int", "INT"],
   ["rush_yd", "rush yds"], ["rush_td", "rush TD"], ["rec", "rec"], ["rec_yd", "rec yds"], ["rec_td", "rec TD"],
   ["fum_lost", "fumbles lost"]];
@@ -367,7 +369,7 @@ export async function build(sl: Source, weekArg?: number | string | null): Promi
   return {
     league: lg.name, season, week, playoff_teams: cfg.playoff_teams ?? null, teams,
     scoring: ({ pts_ppr: "full-PPR", pts_half_ppr: "half-PPR" } as Record<string, string>)[pts_key] ?? "standard",
-    power, games, awards, gems, lineups, pickups, standings, next,
-    ...(final && { champion: final.win.team }),
+    power, games, awards: cfg.best_ball ? awards.filter((a) => !LINEUP_CALLS.has(a.key)) : awards, gems, lineups, pickups, standings, next,
+    ...(final && { champion: final.win.team }), ...(cfg.best_ball && { best_ball: true }),
   };
 }

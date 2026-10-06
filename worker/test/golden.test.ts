@@ -24,3 +24,12 @@ for (const name of ["dd-week2", "dd-week3", "dd-week4", "ll-week1", "ll-week3"])
     }
   });
 }
+
+test("best ball: no trophies about lineup calls, since Sleeper sets every lineup", async () => {
+  const data = replay("dd-week4.json").data;
+  const f = await build(replay({ ...data, "league:": { ...data["league:"], settings: { ...data["league:"].settings, best_ball: 1 } } }), 4);
+  assert.equal(f.best_ball, true);
+  const keys = f.awards.map((a: { key: string }) => a.key);
+  for (const k of ["heartbreaker", "best_mgr", "worst_mgr", "best_bench", "bench_mvp"]) assert.ok(!keys.includes(k), k);
+  assert.ok(keys.includes("high") && keys.includes("mvp"));
+});

@@ -112,8 +112,20 @@ export const finish = (html: string): string => html
 export const html = (body: string, status = 200, maxAge = 60, priv = false) => new Response(body, { status, headers: {
   "content-type": "text/html; charset=utf-8", "cache-control": priv ? "no-store" : `public, max-age=${maxAge}`,
   "x-content-type-options": "nosniff", "referrer-policy": priv ? "no-referrer" : "strict-origin-when-cross-origin",
-  "content-security-policy": "frame-ancestors 'none'", ...(priv && { "x-robots-tag": "noindex" }),
+  ...(priv && { "x-robots-tag": "noindex" }), // (the Content-Security-Policy is added on the way out: csp())
 } });
+
+/** The Content-Security-Policy for every page. Scripts run only by hash (the template's and OPEN_LINKED, both fixed text), so
+ *  markup that slipped past escaping couldn't run any; styles may be inline (the template sizes type with style attributes);
+ *  fonts come from Google, avatars from Sleeper's CDN. Computed once per isolate. */
+let policy: Promise<string> | undefined;
+export const csp = (shell: string) => (policy ??= (async () => {
+  const sha = async (s: string) => btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)))));
+  const scripts = await Promise.all([...`${shell}${OPEN_LINKED}`.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => sha(m[1]!)));
+  return ["default-src 'self'", `script-src ${scripts.map((h) => `'sha256-${h}'`).join(" ")}`, "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src https://fonts.gstatic.com", "img-src 'self' data: https:", "form-action 'self'", "base-uri 'none'", "object-src 'none'",
+    "frame-ancestors 'none'"].join("; ");
+})());
 
 const avatar = (t: J, team: string) => (t?.avatar
   ? `<img class="av" src="${e(t.avatar)}" alt="" width="34" height="34" loading="lazy" decoding="async">`

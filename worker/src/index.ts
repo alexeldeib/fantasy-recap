@@ -9,8 +9,8 @@ import WRITER from "./prompts/writer.md";
 import { editor } from "./editor.ts";
 import { build, type J, pairs } from "./facts.ts";
 import { buildDay, weekday, worthPosting } from "./live.ts";
-import { dayPage, dayTail, feedPage, feedStrip, finish, fine, html, landing, messagePage, paidPage, type Post, previewBanner, type Site, termsPage,
-  waitingPage } from "./pages.ts";
+import { csp, dayPage, dayTail, feedPage, feedStrip, finish, fine, html, landing, messagePage, paidPage, type Post, previewBanner, type Site,
+  termsPage, waitingPage } from "./pages.ts";
 import { displayName, page } from "./render.ts";
 import { type Due, due } from "./schedule.ts";
 import { API, get, players, SCHEDULE, sleeper } from "./sleeper.ts";
@@ -27,7 +27,6 @@ interface Env {
   PAYMENT_LINK: string; // a Stripe Payment Link; the league ID rides along as client_reference_id
   EXAMPLE: string; // slug of a league to show off on the landing page
   ORIGIN: string; // the canonical address, e.g. https://thebenchpress.app
-  LEGACY_HOSTS: Record<string, string>; // older hostnames -> a path on ORIGIN
 }
 interface Job { league_id: string; season: string; week: number; kind: string; delay?: number } // delay: seconds before it starts
 interface League {
@@ -307,57 +306,10 @@ async function leaguePage(env: Env, site: Site, key: string, season?: string, we
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
-    const url = new URL(req.url), path = url.pathname;
-    const site: Site = { brand: env.BRAND, origin: url.origin, price: env.PRICE, payLink: env.PAYMENT_LINK };
-    try {
-      if (path === "/stripe/webhook") {
-        if (req.method !== "POST") return new Response("POST only", { status: 405 });
-        const event = await verify(await req.text(), req.headers.get("stripe-signature"), env.STRIPE_WEBHOOK_SECRET ?? "");
-        if (!event) return new Response("bad signature", { status: 400 });
-        const paid = paidLeague(event);
-        if (paid) await activate(env, paid.leagueId, paid.session); // a throw here returns 500, and Stripe retries
-        return new Response("ok");
-      }
-      const m = path.match(/^\/([a-z0-9-]{1,64})(?:\/(feed|edit)|\/(\d{4})\/(\d{1,2}))?\/?$/);
-      if (m?.[2] === "edit" && env.LEGACY_HOSTS?.[url.hostname] === undefined) return await editor(req, env.DB, site, SHELL, m[1]!); // the one form that POSTs
-      if (req.method !== "GET" && req.method !== "HEAD") return new Response("Method not allowed", { status: 405 });
-      const legacy = env.LEGACY_HOSTS?.[url.hostname]; // (after the webhook: Stripe doesn't follow redirects)
-      if (legacy !== undefined) return Response.redirect(`${env.ORIGIN}${legacy}${legacy && path === "/" ? "/" : path}${url.search}`, 301);
-      if (path === "/") {
-        const ex = env.EXAMPLE && await env.DB.prepare("SELECT name FROM leagues WHERE slug = ? LIMIT 1").bind(env.EXAMPLE).first<{ name: string }>();
-        return html(landing(SHELL, site, ex ? { slug: env.EXAMPLE, name: displayName(ex.name) } : undefined), 200, 300);
-      }
-      if (path === "/go") { // the landing page's box: a league link or a bare ID
-        const id = (url.searchParams.get("league") ?? "").match(/\d{6,24}/)?.[0];
-        return id ? Response.redirect(`${url.origin}/${id}`, 302)
-          : html(messagePage(SHELL, site, "That's not a league link", "Paste the link to your league from Sleeper. It has a long number in it, like sleeper.com/leagues/1234567890/team."), 400);
-      }
-      if (path === "/robots.txt") return new Response("User-agent: *\nDisallow: /go\nDisallow: /paid\nDisallow: /stripe/\nDisallow: /*/edit\n");
-      if (path === "/terms") return html(termsPage(SHELL, site), 200, 3600);
-      if (path === "/health") { // for a monitor: 503 when anything failed, shipped without jokes, or stuck lately
-        const h = await env.DB.prepare(`SELECT
-            COUNT(CASE WHEN status = 'failed' AND updated_at > datetime('now', '-1 day') THEN 1 END) AS failed,
-            COUNT(CASE WHEN status = 'done' AND kind = 'weekly' AND updated_at > datetime('now', '-1 day') AND json_extract(doc, '$.copy.by') = 'template' THEN 1 END) AS plain,
-            COUNT(CASE WHEN status = 'pending' AND updated_at < datetime('now', '-6 hours') THEN 1 END) AS stuck
-          FROM recaps WHERE kind != 'preview'`).first<{ failed: number; plain: number; stuck: number }>();
-        const ok = !h!.failed && !h!.plain && !h!.stuck;
-        return Response.json({ ok, ...h }, { status: ok ? 200 : 503, headers: { "cache-control": "no-store" } });
-      }
-      if (path === "/paid") { // Stripe's Payment Link sends buyers here with ?session={CHECKOUT_SESSION_ID}, which only they know
-        const row = await env.DB.prepare("SELECT slug, name, edit_key FROM leagues WHERE paid_via = ? AND edit_key IS NOT NULL")
-          .bind(url.searchParams.get("session") ?? "").first<{ slug: string; name: string; edit_key: string }>();
-        if (row) return html(paidPage(SHELL, site, row), 200, 0, true);
-        return html(messagePage(SHELL, site, "Payment received", "Setting up your league now. This page checks again in a few seconds.")
-          .replace("</head>", '<meta http-equiv="refresh" content="4"></head>'), 200, 0); // the webhook can trail the redirect by a moment
-      }
-      if (!m) return html(messagePage(SHELL, site, "Page not found", "Nothing lives at that address."), 404);
-      return await leaguePage(env, site, m[1]!, m[3], m[4] ? Number(m[4]) : undefined, m[2] === "feed");
-    } catch (err) {
-      console.error(err);
-      return html(messagePage(SHELL, site, "Fumble", "Something broke on our end. Try again in a minute."), 500, 0);
-    }
+    const res = await route(req, env);
+    if (res.headers.get("content-type")?.startsWith("text/html")) res.headers.set("content-security-policy", await csp(SHELL));
+    return res;
   },
-
   // Every 15 minutes: once a day refresh the player list and tidy storage, then queue whatever's due for every active league.
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
     const state = await get(`${API}/state/nfl`);
@@ -375,3 +327,54 @@ export default {
     if (jobs.length) console.log(`queued ${await enqueue(env, season, jobs)} recaps (due: ${jobs.map((j) => `${j.week}:${j.kind}`).join(", ")})`);
   },
 };
+
+/** Every page and endpoint. HTML responses get the Content-Security-Policy on the way out (fetch, above). */
+async function route(req: Request, env: Env): Promise<Response> {
+  const url = new URL(req.url), path = url.pathname;
+  const site: Site = { brand: env.BRAND, origin: url.origin, price: env.PRICE, payLink: env.PAYMENT_LINK };
+  try {
+    if (path === "/stripe/webhook") {
+      if (req.method !== "POST") return new Response("POST only", { status: 405 });
+      const event = await verify(await req.text(), req.headers.get("stripe-signature"), env.STRIPE_WEBHOOK_SECRET ?? "");
+      if (!event) return new Response("bad signature", { status: 400 });
+      const paid = paidLeague(event);
+      if (paid) await activate(env, paid.leagueId, paid.session); // a throw here returns 500, and Stripe retries
+      return new Response("ok");
+    }
+    const m = path.match(/^\/([a-z0-9-]{1,64})(?:\/(feed|edit)|\/(\d{4})\/(\d{1,2}))?\/?$/);
+    if (m?.[2] === "edit") return await editor(req, env.DB, site, SHELL, m[1]!); // the one form that POSTs
+    if (req.method !== "GET" && req.method !== "HEAD") return new Response("Method not allowed", { status: 405 });
+    if (path === "/") {
+      const ex = env.EXAMPLE && await env.DB.prepare("SELECT name FROM leagues WHERE slug = ? LIMIT 1").bind(env.EXAMPLE).first<{ name: string }>();
+      return html(landing(SHELL, site, ex ? { slug: env.EXAMPLE, name: displayName(ex.name) } : undefined), 200, 300);
+    }
+    if (path === "/go") { // the landing page's box: a league link or a bare ID
+      const id = (url.searchParams.get("league") ?? "").match(/\d{6,24}/)?.[0];
+      return id ? Response.redirect(`${url.origin}/${id}`, 302)
+        : html(messagePage(SHELL, site, "That's not a league link", "Paste the link to your league from Sleeper. It has a long number in it, like sleeper.com/leagues/1234567890/team."), 400);
+    }
+    if (path === "/robots.txt") return new Response("User-agent: *\nDisallow: /go\nDisallow: /paid\nDisallow: /stripe/\nDisallow: /*/edit\n");
+    if (path === "/terms") return html(termsPage(SHELL, site), 200, 3600);
+    if (path === "/health") { // for a monitor: 503 when anything failed, shipped without jokes, or stuck lately
+      const h = await env.DB.prepare(`SELECT
+          COUNT(CASE WHEN status = 'failed' AND updated_at > datetime('now', '-1 day') THEN 1 END) AS failed,
+          COUNT(CASE WHEN status = 'done' AND kind = 'weekly' AND updated_at > datetime('now', '-1 day') AND json_extract(doc, '$.copy.by') = 'template' THEN 1 END) AS plain,
+          COUNT(CASE WHEN status = 'pending' AND updated_at < datetime('now', '-6 hours') THEN 1 END) AS stuck
+        FROM recaps WHERE kind != 'preview'`).first<{ failed: number; plain: number; stuck: number }>();
+      const ok = !h!.failed && !h!.plain && !h!.stuck;
+      return Response.json({ ok, ...h }, { status: ok ? 200 : 503, headers: { "cache-control": "no-store" } });
+    }
+    if (path === "/paid") { // Stripe's Payment Link sends buyers here with ?session={CHECKOUT_SESSION_ID}, which only they know
+      const row = await env.DB.prepare("SELECT slug, name, edit_key FROM leagues WHERE paid_via = ? AND edit_key IS NOT NULL")
+        .bind(url.searchParams.get("session") ?? "").first<{ slug: string; name: string; edit_key: string }>();
+      if (row) return html(paidPage(SHELL, site, row), 200, 0, true);
+      return html(messagePage(SHELL, site, "Payment received", "Setting up your league now. This page checks again in a few seconds.")
+        .replace("</head>", '<meta http-equiv="refresh" content="4"></head>'), 200, 0); // the webhook can trail the redirect by a moment
+    }
+    if (!m) return html(messagePage(SHELL, site, "Page not found", "Nothing lives at that address."), 404);
+    return await leaguePage(env, site, m[1]!, m[3], m[4] ? Number(m[4]) : undefined, m[2] === "feed");
+  } catch (err) {
+    console.error(err);
+    return html(messagePage(SHELL, site, "Fumble", "Something broke on our end. Try again in a minute."), 500, 0);
+  }
+}

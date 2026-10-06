@@ -40,6 +40,10 @@ The page shows each matchup as a score bug: both teams' points, how many starter
 
 In playoff weeks every game has a `stage`: its `name` (Championship, Semifinal, Consolation...) and, in a two-week round, `leg` 1 or 2 of 2. In a second leg, `a_total` and `b_total` add last week's first leg to today's points, the win chances already count it, and the total decides the game, so a team can trail today and still be comfortable. After a first leg, nobody has won yet: say who leads.
 
+## Best ball
+
+When `facts.best_ball` is true, Sleeper sets every lineup itself, so there are no lineup calls to roast: never joke about benching, starting or sitting anyone.
+
 ## League lore
 
 {{lore}}
