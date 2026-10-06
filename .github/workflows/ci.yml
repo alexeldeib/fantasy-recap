@@ -15,3 +15,23 @@ jobs:
           python-version: "3.11" # the oldest the engine supports
       - run: pip install . # installed, not run from the checkout, so a missing template or prompt fails here
       - run: python tests/test_engine.py
+
+  worker:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - run: pip install ..  # the Python engine: the parity tests check the port against it
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: npm ci
+      - run: npm test
+        env:
+          PYTHON: python
+      - run: npx wrangler types && npx tsc --noEmit

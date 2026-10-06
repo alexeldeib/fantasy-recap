@@ -62,16 +62,9 @@ A week flows Sleeper → facts → writer → store → render:
 
 Site repos hold only their league's settings and saved weeks. They install the engine from `main` on every run, so a merged change reaches every site on its next run (or its next push). To pin a site, change `@main` in its `weekly.yml` to a tag and set `engine_ref:` to the same tag.
 
-## Toward a hosted version
+## The hosted version
 
-Nothing in `pipeline.py` knows about GitHub, so a GameDayBot-style service swaps the edges and keeps the middle:
-
-- **Leagues:** `config.League` becomes a database row instead of a TOML file. Sign-up is `fantasy-recap new` behind a form: it already validates the ID and derives the defaults.
-- **Storage:** a database store with `FileStore`'s four methods (`path`, `get`, `put`, `all`), keyed by league.
-- **Jobs:** a scheduled worker calls `pipeline.run(league, store)` for every league once Monday night's games are scored, instead of one cron per repo.
-- **Hosting:** one app serving `render.page()` by hostname, or `render_site()` into object storage, instead of a Pages site per repo.
-
-Not built yet: accounts and auth, billing and per-league spend caps, an approval step before a week publishes, and posting to group chats.
+[`worker/`](worker/) is the same engine as a GameDayBot-style service on Cloudflare: any Sleeper league at `/<league>`, a free preview, a Stripe season pass, the Tuesday recap plus game-day updates after every NFL game day, all in one Worker with D1 and a Workflow. Its tests check that the TypeScript port builds the same facts and renders byte-identical pages as this Python engine. See [worker/README.md](worker/README.md).
 
 ## Development
 

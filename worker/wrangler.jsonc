@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "fantasy-recap",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-30",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  // The recap template and prompts are shared with the Python engine (../fantasy_recap), imported as text.
+  "rules": [{ "type": "Text", "globs": ["**/*.md", "**/*.html"], "fallthrough": true }],
+  "d1_databases": [{ "binding": "DB", "database_name": "fantasy-recap", "database_id": "950baf12-b478-44c9-bcc1-ddfdfe6764d0" }],
+  "workflows": [{ "name": "recap", "binding": "RECAP", "class_name": "RecapWorkflow" }],
+  "triggers": { "crons": ["*/15 * * * *"] },
+  "vars": {
+    "BRAND": "The Bench Press",
+    "PRICE": "$39",
+    "PAYMENT_LINK": "",
+    "EXAMPLE": "double-dipper"
+  }
+}
