@@ -66,7 +66,7 @@ export class RecapWorkflow extends WorkflowEntrypoint<Env, Job> {
           .bind(league_id, season, week - 1).first<{ doc: string }>();
         return row ? (({ headline, signoff }) => ({ headline, signoff }))(JSON.parse(row.doc).copy) : null;
       });
-      const news = await step.do("news", { timeout: "8 minutes" }, () => dayNews(db, client, day, week, season));
+      const news = await step.do("news", { timeout: "12 minutes" }, () => dayNews(db, client, day, week, season)).catch(() => null); // best effort
       const kindOf = [`${facts.teams.length}-team`, facts.scoring, "fantasy football league"].filter(Boolean).join(" ");
       const brief = fillBrief(GAMEDAY, facts, `You write the game-day updates for ${displayName(facts.league)}, a ${kindOf} of friends on Sleeper.`, lore);
       try {
@@ -118,18 +118,28 @@ async function copies(db: D1Database, league: string, season: string, week: numb
   });
 }
 
-/** One web search per game day, shared by every league: the day's big plays and memes. */
+const SEARCHING = "\u0000searching";
+
+/** One web search per game day, shared by every league: the day's big plays and memes. The cron queues every league at
+ *  once, so the first to arrive claims the search and the rest wait for it rather than each paying for their own. */
 async function dayNews(db: D1Database, client: Anthropic, day: string, week: number, season: string): Promise<string | null> {
   const key = `news:${day}`;
-  const hit = await db.prepare("SELECT value FROM cache WHERE key = ?").bind(key).first<{ value: string }>();
-  if (hit) return hit.value || null;
+  const claimed = (await db.prepare("INSERT OR IGNORE INTO cache (key, value) VALUES (?, ?)").bind(key, SEARCHING).run()).meta.changes;
+  if (!claimed) {
+    for (let i = 0; i < 40; i++) { // up to ~7 minutes; a search takes one to three
+      const hit = await db.prepare("SELECT value FROM cache WHERE key = ?").bind(key).first<{ value: string }>();
+      if (hit && hit.value !== SEARCHING) return hit.value || null;
+      await new Promise((r) => setTimeout(r, 10_000));
+    }
+    return null; // ponytail: a search that died mid-claim leaves this day without news; clear its cache row to retry
+  }
   let news: string | null = null;
   try {
     news = await research(client.withOptions({ timeout: 300_000, maxRetries: 1 }), `The NFL's ${weekday(day)} games (Week ${week} of the ${season} season) just finished.`, new Map(), 10);
   } catch (err) {
     console.warn(`no news for ${day} (${err})`);
   }
-  await db.prepare("INSERT OR REPLACE INTO cache (key, value) VALUES (?, ?)").bind(key, news ?? "").run();
+  await db.prepare("UPDATE cache SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?").bind(news ?? "", key).run();
   return news;
 }
 

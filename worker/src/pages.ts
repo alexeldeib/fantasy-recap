@@ -49,7 +49,8 @@ const avatar = (t: J, team: string) => (t?.avatar
   ? `<img class="av" src="${e(t.avatar)}" alt="" width="34" height="34" loading="lazy" decoding="async">`
   : `<span class="av" aria-hidden="true">${e(first(team).toUpperCase())}</span>`);
 
-/** One game-day update: its headline, then a live score bug per matchup with the writer's line under it. */
+/** One game-day update: its headline, then a live score bug per matchup with the writer's line under it. Marker note 0
+ *  rides the section header beside the headline, note 1 sits on the scores (as the game-day prompt tells the writer). */
 export function daySection(doc: J, open = true): string {
   const { facts: f, copy: c } = doc;
   const who = new Map<string, J>(f.teams.map((t: J) => [t.team, t]));
@@ -66,11 +67,11 @@ export function daySection(doc: J, open = true): string {
     + row(x.a, x.a.pts >= x.b.pts) + row(x.b, x.b.pts > x.a.pts)
     + (lines[x.key] ? `<p class="sb-line">${litAt(lines[x.key]!)}</p>` : "") + "</article>").join("");
   const body = `<div class="day"><h3 class="day-h">${e(c.headline || `${f.day_name} update`)}</h3>`
-    + (c.dek ? `<p class="dek">${litAt(c.dek)}</p>` : "") + note(0) + `<div class="bugs">${bugs}</div>`
+    + (c.dek ? `<p class="dek">${litAt(c.dek)}</p>` : "") + note(1) + `<div class="bugs">${bugs}</div>`
     + (c.signoff ? `<p class="pen signoff">${e(c.signoff)}${SCRIBBLE}</p>` : "") + "</div>";
   const id = `day-${f.day}`;
   return open
-    ? `<section class="seg" aria-labelledby="${id}" id="${f.day}">${bumper(id, `${f.day_name} update`, `Week ${f.week} · after ${f.day_name}'s games`, note(1))}${body}</section>`
+    ? `<section class="seg" aria-labelledby="${id}" id="${f.day}">${bumper(id, `${f.day_name} update`, `Week ${f.week} · after ${f.day_name}'s games`, note(0))}${body}</section>`
     : `<details class="earlier" id="${f.day}"><summary>${e(f.day_name)}: ${e(c.headline || "update")}</summary>${body}</details>`;
 }
 
