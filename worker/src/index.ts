@@ -8,12 +8,12 @@ import WRITER from "../../fantasy_recap/prompts/writer.md";
 import GAMEDAY from "./prompts/gameday.md";
 import { build, type J, pairs } from "./facts.ts";
 import { buildDay, weekday, worthPosting } from "./live.ts";
-import { dayPage, dayTail, finish, fine, landing, messagePage, previewBanner, type Site, waitingPage } from "./pages.ts";
+import { dayPage, dayTail, feedPage, feedStrip, finish, fine, landing, messagePage, type Post, previewBanner, type Site, waitingPage } from "./pages.ts";
 import { displayName, page } from "./render.ts";
 import { type Due, due } from "./schedule.ts";
 import { API, get, players, SCHEDULE, sleeper } from "./sleeper.ts";
 import { paidLeague, verify } from "./stripe.ts";
-import { ask, fillBrief, GAMEDAY_SCHEMA, research, templateCopy, weeklyCast } from "./writer.ts";
+import { ask, fillBrief, GAMEDAY_SCHEMA, research, type Spend, templateCopy, weeklyCast } from "./writer.ts";
 
 interface Env {
   DB: D1Database;
@@ -66,12 +66,13 @@ export class RecapWorkflow extends WorkflowEntrypoint<Env, Job> {
           .bind(league_id, season, week - 1).first<{ doc: string }>();
         return row ? (({ headline, signoff }) => ({ headline, signoff }))(JSON.parse(row.doc).copy) : null;
       });
-      const news = await step.do("news", { timeout: "12 minutes" }, () => dayNews(db, client, day, week, season)).catch(() => null); // best effort
+      const [news, newsCost] = await step.do("news", { timeout: "12 minutes" }, () => dayNews(db, client, day, week, season))
+        .catch(() => [null, null] as [null, null]); // best effort
       const kindOf = [`${facts.teams.length}-team`, facts.scoring, "fantasy football league"].filter(Boolean).join(" ");
       const brief = fillBrief(GAMEDAY, facts, `You write the game-day updates for ${displayName(facts.league)}, a ${kindOf} of friends on Sleeper.`, lore);
       try {
-        const [copy, model] = await step.do("write", LLM, () => ask(client, brief, { facts, earlier, last_recap: lastRecap, news }, GAMEDAY_SCHEMA, "medium"));
-        return save("done", { facts, copy: { ...copy, by: model, news } });
+        const [copy, model, cost] = await step.do("write", LLM, () => ask(client, brief, { facts, earlier, last_recap: lastRecap, news }, GAMEDAY_SCHEMA, "medium"));
+        return save("done", { facts, copy: { ...copy, by: model, news }, cost: total([newsCost, cost]) });
       } catch (err) {
         console.error(`game-day copy failed for ${league_id} ${kind}: ${err}`);
         return save("failed");
@@ -80,20 +81,24 @@ export class RecapWorkflow extends WorkflowEntrypoint<Env, Job> {
 
     // The weekly recap: research, draft, punch-up. Any failure falls back a step, so the numbers always ship.
     const earlier = await step.do("earlier", () => copies(db, league_id, season, week, "weekly"));
-    const news = await step.do("research", { timeout: "8 minutes" }, async () => {
+    const [news, researchCost] = await step.do("research", { timeout: "8 minutes" }, async () => {
       try {
         return await research(client.withOptions({ timeout: 300_000, maxRetries: 1 }), `NFL Week ${week} of the ${season} season just finished.`, weeklyCast(facts));
       } catch (err) {
         console.warn(`skipped the web research (${err})`);
-        return null;
+        return [null, null] as [null, null];
       }
     });
+    const costs: (Spend | null)[] = [researchCost];
     const brief = fillBrief(WRITER, facts, league.intro, lore);
     let copy: J;
     try {
-      const [draft, model] = await step.do("draft", LLM, () => ask(client, brief, { facts, previous_weeks: earlier, news }));
+      const [draft, model, draftCost] = await step.do("draft", LLM, () => ask(client, brief, { facts, previous_weeks: earlier, news }, undefined, "high", "draft"));
+      costs.push(draftCost);
       try {
-        const [final, m] = await step.do("punch-up", LLM, () => ask(client, `${brief}\n\n---\n\n${PUNCHUP}`, { facts, previous_weeks: earlier, news, draft }));
+        const [final, m, punchCost] = await step.do("punch-up", LLM, () =>
+          ask(client, `${brief}\n\n---\n\n${PUNCHUP}`, { facts, previous_weeks: earlier, news, draft }, undefined, "high", "punch-up"));
+        costs.push(punchCost);
         copy = { ...final, by: `${m} (draft + punch-up)`, news };
       } catch {
         copy = { ...draft, by: `${model} (draft only)`, news }; // the draft is real copy already
@@ -102,9 +107,15 @@ export class RecapWorkflow extends WorkflowEntrypoint<Env, Job> {
       console.error(`weekly copy failed for ${league_id} week ${week}: ${err}`);
       copy = templateCopy(facts);
     }
-    return save("done", { facts, copy });
+    return save("done", { facts, copy, cost: total(costs) });
   }
 }
+
+/** A recap's Claude bill: each step's usage and the dollars, at list prices. */
+const total = (steps: (Spend | null)[]) => {
+  const done = steps.filter((x): x is Spend => !!x);
+  return { usd: Math.round(done.reduce((n, x) => n + x.usd, 0) * 1e4) / 1e4, steps: done };
+};
 
 /** This season's earlier copy of one kind, oldest first, so the writer doesn't repeat itself. */
 async function copies(db: D1Database, league: string, season: string, week: number, kind: string): Promise<J[]> {
@@ -122,25 +133,25 @@ const SEARCHING = "\u0000searching";
 
 /** One web search per game day, shared by every league: the day's big plays and memes. The cron queues every league at
  *  once, so the first to arrive claims the search and the rest wait for it rather than each paying for their own. */
-async function dayNews(db: D1Database, client: Anthropic, day: string, week: number, season: string): Promise<string | null> {
+async function dayNews(db: D1Database, client: Anthropic, day: string, week: number, season: string): Promise<[string | null, Spend | null]> {
   const key = `news:${day}`;
   const claimed = (await db.prepare("INSERT OR IGNORE INTO cache (key, value) VALUES (?, ?)").bind(key, SEARCHING).run()).meta.changes;
   if (!claimed) {
     for (let i = 0; i < 40; i++) { // up to ~7 minutes; a search takes one to three
       const hit = await db.prepare("SELECT value FROM cache WHERE key = ?").bind(key).first<{ value: string }>();
-      if (hit && hit.value !== SEARCHING) return hit.value || null;
+      if (hit && hit.value !== SEARCHING) return [hit.value || null, null]; // another league paid for this one
       await new Promise((r) => setTimeout(r, 10_000));
     }
-    return null; // ponytail: a search that died mid-claim leaves this day without news; clear its cache row to retry
+    return [null, null]; // ponytail: a search that died mid-claim leaves this day without news; clear its cache row to retry
   }
-  let news: string | null = null;
+  let news: string | null = null, cost: Spend | null = null;
   try {
-    news = await research(client.withOptions({ timeout: 300_000, maxRetries: 1 }), `The NFL's ${weekday(day)} games (Week ${week} of the ${season} season) just finished.`, new Map(), 10);
+    [news, cost] = await research(client.withOptions({ timeout: 300_000, maxRetries: 1 }), `The NFL's ${weekday(day)} games (Week ${week} of the ${season} season) just finished.`, new Map(), 10);
   } catch (err) {
     console.warn(`no news for ${day} (${err})`);
   }
   await db.prepare("UPDATE cache SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?").bind(news ?? "", key).run();
-  return news;
+  return [news, cost];
 }
 
 /** Queue recaps that aren't written yet. A recap's row is claimed first, so each one runs once however often this is called. */
@@ -213,8 +224,9 @@ async function preview(env: Env, site: Site, row: League): Promise<Response> {
     { banner: previewBanner(site, lg, row.league_id), fine: fine(site) })), 200, 300);
 }
 
-/** /<slug> and /<slug>/<season>/<week>: the latest week (or the one asked for), recap first, game-day updates under it. */
-async function leaguePage(env: Env, site: Site, key: string, season?: string, week?: number): Promise<Response> {
+/** /<slug>, /<slug>/<season>/<week> and /<slug>/feed: the latest week (or the one asked for), recap first and its game-day
+ *  updates under it; or every post. Each page opens with the "Latest" strip, so nothing new is ever a hunt away. */
+async function leaguePage(env: Env, site: Site, key: string, season?: string, week?: number, feed = false): Promise<Response> {
   if (/^\d+$/.test(key)) { // a raw Sleeper ID: look it up (or add it), then send them to the league's page
     const row = await findOrAdd(env, key);
     if (!row) return html(messagePage(SHELL, site, "League not found", "That isn't a Sleeper football league ID. Copy your league's link from the Sleeper app or website and try again."), 404);
@@ -225,11 +237,15 @@ async function leaguePage(env: Env, site: Site, key: string, season?: string, we
   if (!row) return html(messagePage(SHELL, site, "League not found", "No league lives at that address yet. Paste your Sleeper league link on the front page to find yours."), 404);
   if (!row.paid_via) return preview(env, site, row);
   const home = `${site.origin}/${row.slug}/`;
-  const weeks = (await env.DB.prepare("SELECT season, week, headline FROM recaps WHERE league_id = ? AND kind = 'weekly' AND status = 'done' ORDER BY week")
-    .bind(row.league_id).all<{ season: string; week: number; headline: string }>()).results
-    .map((r) => ({ facts: { season: r.season, week: r.week }, copy: { headline: r.headline } }));
-  const target = week ?? (await env.DB.prepare("SELECT MAX(week) AS w FROM recaps WHERE league_id = ? AND status = 'done' AND kind != 'preview'")
-    .bind(row.league_id).first<{ w: number | null }>())?.w;
+  // Every post, newest first: within a week the Tuesday recap comes after its game days.
+  const posts = (await env.DB.prepare(`SELECT season, week, kind, headline, json_extract(doc, '$.copy.dek') AS dek FROM recaps
+      WHERE league_id = ? AND status = 'done' AND kind != 'preview' ORDER BY week DESC, kind = 'weekly' DESC, kind DESC`)
+    .bind(row.league_id).all<Post>()).results;
+  // The week switcher: every week with a page, headed by its recap or, on a live week, its newest update.
+  const weeks = [...new Map(posts.map((p) => [p.week, p] as const)).values()].reverse()
+    .map((p) => ({ facts: { season: p.season, week: p.week }, copy: { headline: posts.find((q) => q.week === p.week)!.headline } }));
+  if (feed) return html(feedPage(SHELL, site, row, posts, home, weeks));
+  const target = week ?? posts[0]?.week;
   if (!target) return html(waitingPage(SHELL, site, { name: row.name, season: row.season }, row.league_id, true));
   const docs = (await env.DB.prepare("SELECT kind, doc FROM recaps WHERE league_id = ? AND week = ? AND status = 'done' AND kind != 'preview' ORDER BY kind DESC")
     .bind(row.league_id, target).all<{ kind: string; doc: string }>()).results;
@@ -237,9 +253,9 @@ async function leaguePage(env: Env, site: Site, key: string, season?: string, we
   const url = `${home}${row.season}/${target}/`;
   if (weekly) {
     const d = JSON.parse(weekly.doc);
-    return html(finish(page(SHELL, d.facts, d.copy, url, weeks, home, { tail: dayTail(days), fine: fine(site) })));
+    return html(finish(page(SHELL, d.facts, d.copy, url, weeks, home, { banner: feedStrip(posts, home, target), tail: dayTail(days, false), fine: fine(site) })));
   }
-  if (days.length) return html(dayPage(SHELL, days, site, url, home, weeks));
+  if (days.length) return html(dayPage(SHELL, days, site, url, home, weeks, feedStrip(posts, home, target)));
   return html(messagePage(SHELL, site, "No recap that week", `${row.name} has nothing for week ${target} yet.`), 404);
 }
 
@@ -273,9 +289,9 @@ export default {
         return html(messagePage(SHELL, site, "Payment received", "Setting up your league now. This page checks again in a few seconds.")
           .replace("</head>", '<meta http-equiv="refresh" content="4"></head>'), 200, 0); // the webhook can trail the redirect by a moment
       }
-      const m = path.match(/^\/([a-z0-9-]{1,64})\/?(?:(\d{4})\/(\d{1,2})\/?)?$/);
+      const m = path.match(/^\/([a-z0-9-]{1,64})(?:\/(feed)|\/(\d{4})\/(\d{1,2}))?\/?$/);
       if (!m) return html(messagePage(SHELL, site, "Page not found", "Nothing lives at that address."), 404);
-      return await leaguePage(env, site, m[1]!, m[2], m[3] ? Number(m[3]) : undefined);
+      return await leaguePage(env, site, m[1]!, m[3], m[4] ? Number(m[4]) : undefined, !!m[2]);
     } catch (err) {
       console.error(err);
       return html(messagePage(SHELL, site, "Fumble", "Something broke on our end. Try again in a minute."), 500, 0);

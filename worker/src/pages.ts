@@ -1,6 +1,7 @@
 // The hosted version's own pages and page parts: the landing page, the free-preview banner, and game-day updates.
 // They reuse the recap template's look (its CSS tokens and components); EXTRA_CSS adds the few new pieces.
 import type { J } from "./facts.ts";
+import { weekday } from "./live.ts";
 import { bumper, displayName, fill, fit, litAt, SCRIBBLE } from "./render.ts";
 import { esc as e, first, fixed, words } from "./py.ts";
 
@@ -34,13 +35,53 @@ export const EXTRA_CSS = `<style>
 .lead-copy .dek, .day .dek { grid-area: auto; margin-top: 0; } /* the recap's wide layout moves .dek into its own grid area */
 .live .sb-top .chip { background: var(--pen); color: var(--chalk); }
 .sb-left { padding: 6px 14px 12px 60px; color: var(--chalk-3); font-size: .9rem; line-height: 1.35; }
-.earlier { display: grid; gap: 10px; }
-.earlier summary { cursor: pointer; color: var(--aqua); font-weight: 800; letter-spacing: .08em; text-transform: uppercase; font-size: .9rem; }
+.earlier-list { display: grid; gap: 14px; min-width: 0; }
+.earlier { min-width: 0; background: var(--ink-2); border: 1px solid var(--line); }
+.earlier > summary { list-style: none; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; column-gap: 16px;
+  min-height: 60px; padding-right: 16px; cursor: pointer; }
+.earlier > summary::-webkit-details-marker { display: none; }
+.earlier > summary:focus-visible { outline-offset: -3px; }
+.earlier[open] > summary { border-bottom: 1px solid var(--line); }
+.sum-day { align-self: stretch; display: grid; place-items: center; min-width: 4.2rem; padding: 0 20px 0 12px; background: var(--aqua); color: var(--ink);
+  font: italic 900 1rem/1 var(--f-tv); font-stretch: 75%; text-transform: uppercase; letter-spacing: .06em; clip-path: polygon(0 0, 100% 0, calc(100% - 10px) 100%, 0 100%); }
+.sum-h { display: grid; gap: 3px; min-width: 0; padding-block: 12px; }
+.sum-h b { font: italic 900 1.25rem/1.1 var(--f-tv); font-stretch: 75%; text-transform: uppercase; color: var(--chalk); letter-spacing: .01em; overflow-wrap: anywhere; }
+.sum-h span { color: var(--chalk-3); font-size: .85rem; letter-spacing: .04em; }
+.sum-t { color: var(--volt); font-weight: 800; font-size: .8rem; letter-spacing: .12em; text-transform: uppercase; }
+.sum-t::after { content: "Show"; }
+.earlier[open] .sum-t::after { content: "Hide"; }
+.earlier .day { padding: 18px 16px 22px; }
+.feed { background: var(--ink-2); border-bottom: 1px solid var(--line); padding-inline: var(--side); }
+.feed-in { display: flex; align-items: center; gap: 12px; min-width: 0; padding-block: 10px; }
+.feed-k { flex: none; background: var(--pen); color: var(--chalk); font: italic 900 .85rem/1 var(--f-tv); font-stretch: 75%; letter-spacing: .08em;
+  text-transform: uppercase; padding: 8px 18px 7px 9px; clip-path: polygon(0 0, 100% 0, calc(100% - 8px) 100%, 0 100%); }
+.feed-list { display: flex; gap: 10px; min-width: 0; overflow-x: auto; scrollbar-width: none; margin: 0; padding: 0; list-style: none; }
+.feed-list::-webkit-scrollbar { display: none; }
+.feed-list li { flex: none; display: flex; }
+.fs-i, .fs-all { display: grid; align-content: center; gap: 3px; max-width: 16rem; padding: 7px 12px; background: var(--ink-3); border: 1px solid var(--line);
+  color: var(--chalk); text-decoration: none; }
+.fs-i:hover, .fs-all:hover { border-color: var(--volt); }
+.fs-i.here { border-color: var(--aqua); }
+.fs-d { color: var(--aqua); font-weight: 800; font-size: .72rem; letter-spacing: .1em; text-transform: uppercase; white-space: nowrap; }
+.fs-h { font: italic 900 .98rem/1.1 var(--f-tv); font-stretch: 75%; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fs-all { color: var(--volt); font-weight: 800; font-size: .78rem; letter-spacing: .12em; text-transform: uppercase; white-space: nowrap; }
+.posts { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
+.post { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 16px; min-height: 60px; background: var(--ink-2); border: 1px solid var(--line);
+  color: var(--chalk); text-decoration: none; }
+.post:hover { border-color: var(--volt); }
+.post .sum-h { padding-right: 16px; }
+.post .sum-h span { color: var(--chalk-2); font-size: .95rem; letter-spacing: 0; line-height: 1.45; }
+.post.recap .sum-day { background: var(--volt); }
 </style>`;
 
 /** Every page: the extra styles, a football favicon, and no link-preview image (the hosted version doesn't draw one yet). */
+const OPEN_LINKED = `<script>addEventListener("DOMContentLoaded", function () { /* a link to a folded game-day update opens it */
+  var d = location.hash && document.getElementById(decodeURIComponent(location.hash.slice(1)));
+  if (d && d.tagName === "DETAILS") { d.open = true; d.scrollIntoView(); }
+});</script>`;
+
 export const finish = (html: string): string => html
-  .replace("</head>", `${EXTRA_CSS}</head>`)
+  .replace("</head>", `${EXTRA_CSS}${OPEN_LINKED}</head>`)
   .replace(/<!-- The link preview[^\n]*\n(<meta property="og:image[^\n]*\n)+/, "")
   .replace('content="summary_large_image"', 'content="summary"')
   .replace(/font-size='90'>[^<]*</, "font-size='90'>🏈<");
@@ -49,15 +90,18 @@ const avatar = (t: J, team: string) => (t?.avatar
   ? `<img class="av" src="${e(t.avatar)}" alt="" width="34" height="34" loading="lazy" decoding="async">`
   : `<span class="av" aria-hidden="true">${e(first(team).toUpperCase())}</span>`);
 
-/** One game-day update: its headline, then a live score bug per matchup with the writer's line under it. Marker note 0
- *  rides the section header beside the headline, note 1 sits on the scores (as the game-day prompt tells the writer). */
-export function daySection(doc: J, open = true): string {
+const WEEKDAYS = ["Thursday", "Friday", "Saturday", "Sunday", "Monday", "Tuesday", "Wednesday"]; // an NFL week's order
+
+/** One game-day update's content: a live score bug per matchup with the writer's line under it, between the dek and the
+ *  signoff. Marker note 0 rides the section header beside the headline, note 1 sits on the scores (as the game-day prompt
+ *  tells the writer). */
+function dayBody(doc: J, headline: boolean): string {
   const { facts: f, copy: c } = doc;
   const who = new Map<string, J>(f.teams.map((t: J) => [t.team, t]));
   const lines: Record<string, string> = Object.fromEntries((c.game_lines || []).map((x: J) => [x.key, x.line]));
-  const note = (i: number) => ((c.pen_notes || [])[i] ? `<p class="pen">${e(c.pen_notes[i])}${SCRIBBLE}</p>` : "");
   const row = (s: J, lead: boolean) => {
-    const left = s.left ? `${s.left} left (${[...new Set(s.still_to_play.map((p: J) => p.when.slice(0, 3)))].join(", ")}) · proj ${fixed(s.proj_final, 1)}` : "Done";
+    const days = [...new Set<string>(s.still_to_play.map((p: J) => p.when))].sort((a, b) => WEEKDAYS.indexOf(a) - WEEKDAYS.indexOf(b));
+    const left = s.left ? `${s.left} left (${days.map((d) => d.slice(0, 3)).join(", ")}) · proj ${fixed(s.proj_final, 1)}` : "Done";
     return `<p class="sb-row${lead ? " win" : ""}">${avatar(who.get(s.team), s.team)}<span class="sb-t" style="--n:${fit(s.team)}">${e(s.team)}</span>`
       + `<b class="sb-s">${fixed(s.pts, 2)}</b></p><p class="sb-left">${e(left)}${s.left ? ` · ${s.win_pct}% to win` : ""}</p>`;
   };
@@ -66,32 +110,88 @@ export function daySection(doc: J, open = true): string {
     + `<span class="sb-m">${x.final ? `+${fixed(x.margin, 2)}` : ""}</span></p>`
     + row(x.a, x.a.pts >= x.b.pts) + row(x.b, x.b.pts > x.a.pts)
     + (lines[x.key] ? `<p class="sb-line">${litAt(lines[x.key]!)}</p>` : "") + "</article>").join("");
-  const body = `<div class="day"><h3 class="day-h">${e(c.headline || `${f.day_name} update`)}</h3>`
-    + (c.dek ? `<p class="dek">${litAt(c.dek)}</p>` : "") + note(1) + `<div class="bugs">${bugs}</div>`
+  return `<div class="day">${headline ? `<h3 class="day-h">${e(c.headline || `${f.day_name} update`)}</h3>` : ""}`
+    + (c.dek ? `<p class="dek">${litAt(c.dek)}</p>` : "") + note(c, 1) + `<div class="bugs">${bugs}</div>`
     + (c.signoff ? `<p class="pen signoff">${e(c.signoff)}${SCRIBBLE}</p>` : "") + "</div>";
-  const id = `day-${f.day}`;
-  return open
-    ? `<section class="seg" aria-labelledby="${id}" id="${f.day}">${bumper(id, `${f.day_name} update`, `Week ${f.week} · after ${f.day_name}'s games`, note(0))}${body}</section>`
-    : `<details class="earlier" id="${f.day}"><summary>${e(f.day_name)}: ${e(c.headline || "update")}</summary>${body}</details>`;
 }
 
-/** The game-day updates under a week, newest first: the latest one open, earlier ones folded. */
-export const dayTail = (docs: J[]): string =>
-  docs.length ? docs.map((d, i) => daySection(d, i === 0)).join("") : "";
+const note = (c: J, i: number) => ((c.pen_notes || [])[i] ? `<p class="pen">${e(c.pen_notes[i])}${SCRIBBLE}</p>` : "");
 
-/** A week that has game-day updates but no recap yet: the newest update leads the page. */
-export function dayPage(shell: string, docs: J[], site: Site, url: string, home: string, recaps: J[]): string {
+/** The newest update, as its own section. */
+export function daySection(doc: J): string {
+  const f = doc.facts, id = `day-${f.day}`;
+  return `<section class="seg" aria-labelledby="${id}" id="${f.day}">${bumper(id, `${f.day_name} update`, `Week ${f.week} · after ${f.day_name}'s games`, note(doc.copy, 0))}`
+    + `${dayBody(doc, true)}</section>`;
+}
+
+/** An earlier update, folded into a card: day, headline, then the whole update when opened. */
+const dayCard = (doc: J): string => `<details class="earlier" id="${doc.facts.day}"><summary><span class="sum-day">${e(doc.facts.day_name.slice(0, 3))}</span>`
+  + `<span class="sum-h"><b>${e(doc.copy.headline || `${doc.facts.day_name} update`)}</b><span>After ${e(doc.facts.day_name)}'s games</span></span>`
+  + `<span class="sum-t" aria-hidden="true"></span></summary>${dayBody(doc, false)}</details>`;
+
+/** A week's game-day updates, newest first. On a live week the newest leads and the rest fold under "Earlier this week";
+ *  under a weekly recap they all fold, as the week's back story. */
+export function dayTail(docs: J[], leadWithNewest = true): string {
+  const rest = leadWithNewest ? docs.slice(1) : [...docs].reverse(); // the back story reads in order, Thursday first
+  return (leadWithNewest && docs.length ? daySection(docs[0]) : "") + (rest.length
+    ? `<section class="seg" aria-labelledby="earlier-h">${bumper("earlier-h", leadWithNewest ? "Earlier this week" : "How the week unfolded", "Game-day updates")}`
+      + `<div class="earlier-list">${rest.map(dayCard).join("")}</div></section>` : "");
+}
+
+/** A week that has game-day updates but no recap yet: the newest update leads the page. `weeks` is every week with a page. */
+export function dayPage(shell: string, docs: J[], site: Site, url: string, home: string, weeks: J[], strip: string): string {
   const f = docs[0].facts, c = docs[0].copy, league = f.league;
   const mark = words(league).slice(0, 2).map(first).join("").toUpperCase();
-  const archive = recaps.map((d) => `<li><a href="${home}${d.facts.season}/${d.facts.week}/"><span class="arc-wk">Wk ${d.facts.week}</span>${e(d.copy.headline || "")}</a></li>`).reverse().join("");
-  const body = mast(mark, league, `${f.season} · week ${f.week} live`) + `<main>${dayTail(docs)}</main>`
+  const archive = weeks.map((d) => `<li><a href="${home}${d.facts.season}/${d.facts.week}/"${d.facts.week === f.week ? " aria-current=page" : ""}>`
+    + `<span class="arc-wk">Wk ${d.facts.week}</span>${e(d.copy.headline || "")}</a></li>`).reverse().join("");
+  const body = mast(mark, league, `${f.season} · week ${f.week} live`, weekNav(weeks, f.season, f.week, home)) + `<main>${strip}${dayTail(docs)}</main>`
     + foot(league, archive, site);
   return finish(fill(shell, { title: e(`${c.headline || `${f.day_name} update`} · ${displayName(league)} Week ${f.week}`),
     description: e(c.dek || ""), image: "", image_alt: "", url: e(url), brand: e(displayName(league)), body }));
 }
 
-const mast = (mark: string, league: string, sub: string) => `<header class="mast"><div class="mast-in"><p class="mark" aria-hidden="true">${e(mark)}</p>`
-  + `<p class="brand"><b>${e(league)}</b><span>${e(sub)}</span></p></div></header>`;
+const mast = (mark: string, league: string, sub: string, nav = "") => `<header class="mast"><div class="mast-in"><p class="mark" aria-hidden="true">${e(mark)}</p>`
+  + `<p class="brand"><b>${e(league)}</b><span>${e(sub)}</span></p>${nav}</div></header>`;
+
+/** The recap pages' week switcher (same markup as render.ts page()), for pages it doesn't draw. */
+function weekNav(weeks: J[], season: string, week: number, home: string): string {
+  const here = weeks.findIndex((x) => x.facts.season === season && x.facts.week === week);
+  const url = (x: J) => `${home}${x.facts.season}/${x.facts.week}/`;
+  const step = (i: number, cls: string, label: string) => (here < 0 || !(0 <= i && i < weeks.length)
+    ? `<span class="step ${cls} off" aria-hidden="true"></span>`
+    : `<a class="step ${cls}" href="${url(weeks[i])}" rel="${cls}"><span class="sr">${label}: week ${weeks[i].facts.week}</span></a>`);
+  const chips = weeks.map((x, i) => `<li><a href="${url(x)}"${i === here ? " aria-current=page" : ""}>Wk ${x.facts.week}</a></li>`).join("");
+  return `<nav class="weeks" aria-label="Weeks">${step(Math.max(here, 0) - 1, "prev", "Previous")}<ol class="wk-list" role="list">${chips}</ol>`
+    + `${step(Math.max(here, 0) + 1, "next", "Next")}</nav>`;
+}
+
+/** One post in the league's feed: a weekly recap, or a game-day update. */
+export interface Post { season: string; week: number; kind: string; headline: string | null; dek?: string | null }
+export const postUrl = (home: string, p: Post) => `${home}${p.season}/${p.week}/${p.kind === "weekly" ? "" : `#${p.kind.slice(4)}`}`;
+const postDay = (p: Post) => (p.kind === "weekly" ? "Recap" : weekday(p.kind.slice(4)).slice(0, 3));
+
+/** The "Latest" strip under the masthead: the newest posts across weeks, so every page is one tap from what's new. */
+export function feedStrip(posts: Post[], home: string, week?: number): string {
+  if (!posts.length) return "";
+  const items = posts.slice(0, 8).map((p, i) => `<li><a class="fs-i${p.week === week ? " here" : ""}" href="${postUrl(home, p)}">`
+    + `<span class="fs-d">${i === 0 ? "New · " : ""}${postDay(p)} · Wk ${p.week}</span><span class="fs-h">${e(p.headline || "")}</span></a></li>`).join("");
+  return `<nav class="feed" aria-label="Latest posts"><div class="feed-in"><p class="feed-k" aria-hidden="true">Latest</p>`
+    + `<ol class="feed-list" role="list">${items}<li><a class="fs-all" href="${home}feed">All posts</a></li></ol></div></nav>`;
+}
+
+/** Every post this season, newest first, a section per week. */
+export function feedPage(shell: string, site: Site, league: { name: string; season: string }, posts: Post[], home: string, weeks: J[]): string {
+  const byWeek = new Map<number, Post[]>();
+  for (const p of posts) byWeek.set(p.week, [...(byWeek.get(p.week) ?? []), p]);
+  const sections = [...byWeek].map(([week, ps]) => `<section class="seg" aria-labelledby="wk-${week}">${bumper(`wk-${week}`, `Week ${week}`, `${ps.length} post${ps.length > 1 ? "s" : ""}`)}`
+    + `<ol class="posts" role="list">${ps.map((p) => `<li><a class="post${p.kind === "weekly" ? " recap" : ""}" href="${postUrl(home, p)}"><span class="sum-day">${postDay(p)}</span>`
+      + `<span class="sum-h"><b>${e(p.headline || "")}</b>${p.dek ? `<span>${e(p.dek)}</span>` : ""}</span></a></li>`).join("")}</ol></section>`).join("");
+  const name = league.name, mark = words(name).slice(0, 2).map(first).join("").toUpperCase();
+  const body = mast(mark, name, `${league.season} · every post`, weekNav(weeks, league.season, -1, home))
+    + `<main>${sections || `<section class="seg"><p class="dek">Nothing posted yet.</p></section>`}</main>` + foot(name, "", site);
+  return finish(fill(shell, { title: e(`All posts · ${displayName(name)}`), description: e(`Every recap and game-day update for ${displayName(name)}.`),
+    image: "", image_alt: "", url: e(`${home}feed`), brand: e(displayName(name)), body }));
+}
 
 const foot = (league: string, archive: string, site: Site) => `<footer class="foot">`
   + (archive ? `<nav aria-labelledby="arc-h"><h2 id="arc-h" class="foot-h">Previously on ${e(league)}</h2><ul class="archive">${archive}</ul></nav>` : "")

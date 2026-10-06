@@ -31,8 +31,24 @@ export const GAMEDAY_SCHEMA = {
 
 const WEB_SEARCH = { type: "web_search_20260209", name: "web_search", max_uses: 8 } as const;
 
+/** Opus 5.5 list prices: per token, and per web search. */
+const PRICE = { input: 4e-6, output: 20e-6, cache_read: 0.2e-6, cache_write: 5e-6, search: 0.01 };
+type Usage = Pick<Anthropic.Usage, "input_tokens" | "output_tokens" | "cache_read_input_tokens" | "cache_creation_input_tokens"> & {
+  server_tool_use?: { web_search_requests?: number | null } | null;
+};
+export interface Spend { step: string; input: number; output: number; cache_read: number; cache_write: number; searches: number; usd: number }
+
+/** What one step's calls cost, from the usage the API reports. Saved with each recap, so pricing rests on real numbers. */
+export function spend(step: string, usages: Usage[]): Spend {
+  const sum = (f: (u: Usage) => number | null | undefined) => usages.reduce((n, u) => n + (f(u) ?? 0), 0);
+  const t = { input: sum((u) => u.input_tokens), output: sum((u) => u.output_tokens), cache_read: sum((u) => u.cache_read_input_tokens),
+    cache_write: sum((u) => u.cache_creation_input_tokens), searches: sum((u) => u.server_tool_use?.web_search_requests) };
+  const usd = t.input * PRICE.input + t.output * PRICE.output + t.cache_read * PRICE.cache_read + t.cache_write * PRICE.cache_write + t.searches * PRICE.search;
+  return { step, ...t, usd: Math.round(usd * 1e4) / 1e4 };
+}
+
 /** Best effort: web-search real NFL moments (big plays, bloopers, memes), for these players or (no players) the whole slate. */
-export async function research(client: Anthropic, when: string, who: Map<string, string>, uses = 8): Promise<string | null> {
+export async function research(client: Anthropic, when: string, who: Map<string, string>, uses = 8): Promise<[string | null, Spend]> {
   const focus = who.size ? "Focus on these players, who are on a fantasy league's rosters (their fantasy team in parentheses):\n"
     + [...who].map(([p, t]) => `${p} (${t})`).join("; ") : "Cover the biggest moments across all of those games.";
   const ask = `${when} Search the web for the real-life moments fans are talking about: huge plays, bloopers, bizarre `
@@ -42,13 +58,15 @@ export async function research(client: Anthropic, when: string, who: Map<string,
     + "Skip injuries and anything off the field: legal, personal or health news.";
   let messages: Anthropic.MessageParam[] = [{ role: "user", content: ask }];
   let msg: Anthropic.Message | undefined;
+  const usages: Usage[] = [];
   for (let i = 0; i < 5; i++) { // a server-side search can pause mid-turn; resending the paused turn resumes it
     msg = await client.messages.create({ model: MODEL, max_tokens: 16000, tools: [{ ...WEB_SEARCH, max_uses: uses }],
       messages, output_config: { effort: "medium" } });
+    usages.push(msg.usage);
     if (msg.stop_reason !== "pause_turn") break;
     messages = [messages[0]!, { role: "assistant", content: msg.content }];
   }
-  return msg!.content.filter((b) => b.type === "text").map((b) => b.text).join("").trim() || null;
+  return [msg!.content.filter((b) => b.type === "text").map((b) => b.text).join("").trim() || null, spend("research", usages)];
 }
 
 /** The players a weekly recap's research covers: every starter, plus benched players who scored big. */
@@ -62,7 +80,7 @@ export function weeklyCast(facts: J): Map<string, string> {
 
 /** One structured-output call. Throws on anything but a clean finish, so the workflow step can retry it. */
 export async function ask(client: Anthropic, system: string, payload: J, schema: object = SCHEMA,
-  effort: "low" | "medium" | "high" = "high"): Promise<[J, string]> {
+  effort: "low" | "medium" | "high" = "high", step = "write"): Promise<[J, string, Spend]> {
   // Streamed with room to think: 16k tokens ran out on a busy week and silently fell back to template copy.
   const stream = client.beta.messages.stream({
     model: MODEL,
@@ -76,7 +94,7 @@ export async function ask(client: Anthropic, system: string, payload: J, schema:
   const msg = await stream.finalMessage();
   if (msg.stop_reason !== "end_turn") throw new Error(`stop_reason=${msg.stop_reason}`);
   // After a mid-stream fallback the new model continues the partial text, so the JSON spans text blocks.
-  return [JSON.parse(msg.content.filter((b) => b.type === "text").map((b) => b.text).join("")), msg.model];
+  return [JSON.parse(msg.content.filter((b) => b.type === "text").map((b) => b.text).join("")), msg.model, spend(step, [msg.usage])];
 }
 
 export function templateCopy(f: J): J {
