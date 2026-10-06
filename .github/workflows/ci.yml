@@ -35,3 +35,26 @@ jobs:
         env:
           PYTHON: python
       - run: npx wrangler types && npx tsc --noEmit
+
+  # Production: main deploys itself once both test jobs pass. Needs two repo secrets, CLOUDFLARE_API_TOKEN (the "Edit
+  # Cloudflare Workers" template plus D1 edit) and CLOUDFLARE_ACCOUNT_ID; until they exist, the deploy step is skipped.
+  deploy:
+    needs: [test, worker]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    concurrency: deploy
+    defaults:
+      run:
+        working-directory: worker
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: npm ci --ignore-scripts # the token is in this job's environment: no install scripts
+      - name: Deploy to recaps.alexeldeib.xyz
+        if: env.CLOUDFLARE_API_TOKEN != ''
+        run: npx wrangler deploy

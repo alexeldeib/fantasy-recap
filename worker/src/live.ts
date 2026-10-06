@@ -24,11 +24,12 @@ export async function buildDay(sl: Source, week: number, day: string): Promise<J
   const games: J[] = schedule.filter((x: J) => x.week === week);
   const dates = [...new Set(games.map((x) => x.date as string))].sort();
   const nfl = new Map<string, J>(games.flatMap((x) => [[x.home, x], [x.away, x]]));
-  // done: played earlier this week; today: played on `day`; later: still to play; bye: no game (or no team)
+  // As of the end of `day`: done (played earlier this week), today, later (still to play then, even if it's over by
+  // now: a late or backfilled update tells the story as it stood), or bye (no game, or no team).
   const status = (pid: string) => {
     const x = nfl.get(info(pid).team);
     if (!x) return "bye";
-    if (x.status !== "complete") return "later";
+    if (x.date > day || x.status !== "complete") return "later";
     return x.date === day ? "today" : "done";
   };
   const line = (pid: string) => {
@@ -44,10 +45,11 @@ export async function buildDay(sl: Source, week: number, day: string): Promise<J
   const side = (m: J) => {
     const st: string[] = m.starters.filter((p: string) => p !== "0");
     const later = st.filter((p) => status(p) === "later");
+    const pts = fsum(st.filter((p) => status(p) !== "later").map((p) => m.players_points[p] ?? 0));
     const projLeft = pyround(fsum(later.map((p) => proj.get(p) ?? 0)), 1);
     return {
-      team: team.get(m.roster_id), pts: pyround(m.points ?? 0, 2), left: later.length, proj_left: projLeft,
-      proj_final: pyround((m.points ?? 0) + projLeft, 1),
+      team: team.get(m.roster_id), pts: pyround(pts, 2), left: later.length, proj_left: projLeft,
+      proj_final: pyround(pts + projLeft, 1),
       still_to_play: later.map((p) => ({ player: full(p), nfl: info(p).team, when: weekday(nfl.get(info(p).team).date), proj: proj.get(p) ?? null })),
       played_today: sortBy(st.filter((p) => status(p) === "today"), (p) => -(m.players_points[p] ?? 0))
         .map((p) => ({ player: full(p), pts: m.players_points[p] ?? 0, proj: proj.get(p) ?? null, line: line(p) })),

@@ -5,6 +5,9 @@
   "compatibility_date": "2026-09-30",
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
+  // Production. Cloudflare makes the DNS record and certificate on deploy; move to the product's own domain later.
+  "routes": [{ "pattern": "recaps.alexeldeib.xyz", "custom_domain": true }],
+  "workers_dev": false,
   // The recap template and prompts are shared with the Python engine (../fantasy_recap), imported as text.
   "rules": [{ "type": "Text", "globs": ["**/*.md", "**/*.html"], "fallthrough": true }],
   "d1_databases": [{ "binding": "DB", "database_name": "fantasy-recap", "database_id": "950baf12-b478-44c9-bcc1-ddfdfe6764d0" }],
@@ -13,7 +16,7 @@
   "vars": {
     "BRAND": "The Bench Press",
     "PRICE": "$39",
-    "PAYMENT_LINK": "",
+    "PAYMENT_LINK": "https://buy.stripe.com/test_cNifZh3Wf9xa8Gnf7i1sQ00",
     "EXAMPLE": "double-dipper"
   }
 }

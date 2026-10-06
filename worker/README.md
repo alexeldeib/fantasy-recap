@@ -2,7 +2,7 @@
 
 Any Sleeper league, one address: `https://<host>/<league>`. Paste a league link to see a free preview of your latest week, buy a season pass, and the recaps write themselves: the full recap every Tuesday morning, plus a quick hit after every NFL game day. No accounts, no apps; the league's page is the product.
 
-Running at https://fantasy-recap.alexeldeib.workers.dev, with Double Dipper and La Liga mirrored as examples.
+Production: https://recaps.alexeldeib.xyz (a Workers custom domain; Cloudflare manages its DNS record and certificate), with Double Dipper and La Liga mirrored as examples. Payments run on Stripe test mode (the Ace Eldeib sandbox) until it's flipped to live.
 
 ## How it works
 
@@ -37,6 +37,18 @@ Payments are one Stripe Payment Link, no Stripe code beyond the webhook check:
 
 The Workers Paid plan ($5 a month) is required: building a week's facts takes more CPU than the free plan's 10ms.
 
+### Deploys
+
+`npx wrangler deploy` from this folder ships to production. CI (`.github/workflows/ci.yml`) deploys too, on every push to `main` once the Python and worker tests pass, after two repo secrets exist: `CLOUDFLARE_API_TOKEN` (the "Edit Cloudflare Workers" template plus D1 edit) and `CLOUDFLARE_ACCOUNT_ID`. Secrets set with `wrangler secret put` survive deploys.
+
+### Going live with Stripe
+
+Test mode uses a sandbox Payment Link and webhook endpoint (`plink_1UNN0lGQzLQ7kipMPanxaF6C`, `we_1UNN0lGQzLQ7kipMkmaokOm6`). There are no Stripe API keys in the app, so going live is three changes:
+
+1. In the live account, create the same product, price, Payment Link (same `/paid` redirect) and webhook endpoint.
+2. Put the live Payment Link in `PAYMENT_LINK`, deploy, and `npx wrangler secret put STRIPE_WEBHOOK_SECRET` with the live endpoint's signing secret.
+3. Turn off the leagues test payments turned on: `UPDATE leagues SET paid_via = NULL WHERE paid_via LIKE 'cs_test_%'`.
+
 ## Run it
 
 ```bash
@@ -46,7 +58,7 @@ npx wrangler d1 execute fantasy-recap --remote --command "SELECT slug, season, p
 ```
 
 - **Comp a league:** visit `/<league id>` once, then `UPDATE leagues SET paid_via = 'comp' WHERE slug = '<slug>'`.
-- **Redo a recap:** delete its row; the next tick rewrites it while it's still due (game-day updates for 60 hours, weekly recaps for 5 days). `DELETE FROM recaps WHERE league_id = '<id>' AND week = 5 AND kind = 'weekly'`
+- **Write or redo one recap now:** `node scripts/queue.ts <league id> 2026 5 weekly` (or `day-2026-10-04`). Works for any league, including showcases, and costs a Claude call or three. Game-day facts are computed as of the end of that day, so a late or backfilled update still tells the story as it stood.
 - **League lore:** `UPDATE leagues SET lore = '["Last year''s champion is @someone."]' WHERE slug = '<slug>'`
 - **Mirror a GitHub-hosted site:** `node scripts/import-site.ts ../../double-dipper double-dipper > import.sql`, then execute it with `--remote --file import.sql`. `showcase` leagues are shown and never written; import with `comp` to hand a league over to the hosted version.
 - **Refunds:** in Stripe, then `UPDATE leagues SET paid_via = NULL WHERE paid_via = '<checkout session id>'`.
