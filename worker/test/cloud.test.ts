@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { apply, fields } from "../src/editor.ts";
 import { due } from "../src/schedule.ts";
+import { get } from "../src/sleeper.ts";
 import { paidLeague, verify } from "../src/stripe.ts";
 import { replay } from "./replay.ts";
 
@@ -26,7 +27,8 @@ test("webhook: a signed, fresh, paid checkout activates its league; anything els
   assert.equal(paidLeague({ ...event, data: { object: { ...event.data.object, payment_status: "unpaid" } } }), null);
   assert.deepEqual(paidLeague({ ...event, data: { object: { ...event.data.object, payment_status: "no_payment_required" } } }),
     { leagueId: "1393873211271188480", session: "cs_test_1" }, "a 100%-off promotion code");
-  assert.equal(paidLeague({ ...event, data: { object: { ...event.data.object, client_reference_id: "x; drop table" } } }), null);
+  assert.deepEqual(paidLeague({ ...event, data: { object: { ...event.data.object, client_reference_id: "x; drop table" } } }),
+    { leagueId: null, session: "cs_test_1" }, "no league to turn on: flagged for a refund, never injected");
   assert.equal(paidLeague({ type: "charge.refunded" }), null);
 });
 
@@ -57,4 +59,33 @@ test("editor: a form changes only lines the copy already has", () => {
   assert.deepEqual(fields({ awards: [{ key: "high", label: "Top score" }] }, copy).map(([name, label]) => `${name}=${label}`),
     ["headline=Headline", "dek=Dek, the line under the headline", "pen_notes.0=Red marker note 1 (22 characters at most)",
       "story.0=Rundown, paragraph 1", "story.1=Rundown, paragraph 2", "power_lines.Mr. T's Team=Power rankings: Mr. T's Team", "award_lines.high=Trophy: Top score"]);
+});
+
+test("webhook: a paid checkout that names no league still comes back, so it can be flagged for a refund", () => {
+  const s = { id: "cs_live_9", payment_status: "paid" };
+  assert.deepEqual(paidLeague({ type: "checkout.session.completed", data: { object: s } }), { leagueId: null, session: "cs_live_9" });
+  assert.deepEqual(paidLeague({ type: "checkout.session.completed", data: { object: { ...s, client_reference_id: "x; drop table" } } }),
+    { leagueId: null, session: "cs_live_9" });
+  assert.equal(paidLeague({ type: "checkout.session.completed", data: { object: { ...s, payment_status: "unpaid" } } }), null);
+});
+
+test("sleeper: an outage throws (so a step retries); only missing data falls back, and extras fall back on anything", async () => {
+  const real = globalThis.fetch;
+  const answer = (status: number, body: unknown) => { globalThis.fetch = async () => new Response(JSON.stringify(body), { status }); };
+  try {
+    answer(503, {});
+    await assert.rejects(get("https://api.sleeper.app/v1/league/1/matchups/4", []), /HTTP 503/, "an outage is not 'no games'");
+    assert.deepEqual(await get("https://api.sleeper.com/projections/nfl/2026/4", [], 0, true), [], "an extra can do without");
+    answer(429, {});
+    await assert.rejects(get("https://api.sleeper.app/v1/league/1/winners_bracket", []), /HTTP 429/);
+    answer(404, {});
+    assert.deepEqual(await get("https://api.sleeper.app/v1/league/1/matchups/19", []), []);
+    answer(200, null);
+    assert.equal(await get("https://api.sleeper.app/v1/league/1", null), null, "Sleeper's null for an unknown league");
+    await assert.rejects(get("https://api.sleeper.app/v1/league/1"), /not found/);
+    answer(200, [{ matchup_id: 1 }]);
+    assert.deepEqual(await get("https://api.sleeper.app/v1/league/1/matchups/4", []), [{ matchup_id: 1 }]);
+  } finally {
+    globalThis.fetch = real;
+  }
 });

@@ -42,11 +42,15 @@ export class RecapWorkflow extends WorkflowEntrypoint<Env, Job> {
     const db = this.env.DB;
     if (delay) await step.sleep("stagger", delay * 1000);
     const save = (status: string, doc: J = null) => step.do(`save (${status})`, async () => {
-      await db.prepare("UPDATE recaps SET status = ?, headline = ?, dek = ?, doc = ?, updated_at = CURRENT_TIMESTAMP WHERE league_id = ? AND season = ? AND week = ? AND kind = ?")
+      // A rewrite (admin redo) that fails or finds nothing leaves the post that was already up.
+      await db.prepare(`UPDATE recaps SET status = ?, headline = ?, dek = ?, doc = ?, updated_at = CURRENT_TIMESTAMP
+          WHERE league_id = ? AND season = ? AND week = ? AND kind = ?${status === "done" ? "" : " AND status != 'done'"}`)
         .bind(status, doc?.copy?.headline ?? null, doc?.copy?.dek ?? null, doc && JSON.stringify(slim(doc)), league_id, season, week, kind).run();
       return status;
     });
-    const league = await step.do("league", () => db.prepare("SELECT * FROM leagues WHERE league_id = ?").bind(league_id).first<League>());
+    // Only what the writer needs: a step's result is kept in the run's history, and the editor key doesn't belong there.
+    const league = await step.do("league", () => db.prepare("SELECT intro, lore FROM leagues WHERE league_id = ?").bind(league_id)
+      .first<Pick<League, "intro" | "lore">>());
     if (!league) return save("skipped");
     const day = kind.startsWith("day-") ? kind.slice(4) : null;
     const sl = sleeper(league_id, db);
@@ -139,14 +143,17 @@ const slim = (doc: J): J => (doc?.facts?.lineups ? { ...doc, facts: { ...doc.fac
 /** One web search shared by every league (a game day's big plays and memes, or a week's): the first league to need it
  *  claims the search, the rest wait for it rather than each paying for their own (the cron queues every league at once). */
 async function sharedNews(db: D1Database, client: Anthropic, key: string, when: string): Promise<[string | null, Spend | null]> {
-  const claimed = (await db.prepare("INSERT OR IGNORE INTO cache (key, value) VALUES (?, ?)").bind(key, SEARCHING).run()).meta.changes;
+  let claimed = (await db.prepare("INSERT OR IGNORE INTO cache (key, value) VALUES (?, ?)").bind(key, SEARCHING).run()).meta.changes;
+  // A claim whose search died with it (a deploy or a timeout mid-search) is taken over after 10 minutes.
+  claimed ||= (await db.prepare("UPDATE cache SET updated_at = CURRENT_TIMESTAMP WHERE key = ? AND value = ? AND updated_at < datetime('now', '-10 minutes')")
+    .bind(key, SEARCHING).run()).meta.changes;
   if (!claimed) {
     for (let i = 0; i < 40; i++) { // up to ~7 minutes; a search takes one to three
       const hit = await db.prepare("SELECT value FROM cache WHERE key = ?").bind(key).first<{ value: string }>();
       if (hit && hit.value !== SEARCHING) return [hit.value || null, null]; // another league paid for this one
       await new Promise((r) => setTimeout(r, 10_000));
     }
-    return [null, null]; // ponytail: a search that died mid-claim leaves this without news; clear its cache row to retry
+    return [null, null]; // still searching after 7 minutes: write without news
   }
   let news: string | null = null, cost: Spend | null = null;
   try {
@@ -181,20 +188,33 @@ async function enqueue(env: Env, season: string, jobs: Due[], only?: string): Pr
   // ponytail: 2 seconds apart keeps a burst under Sleeper's 1,000 requests a minute (a weekly recap makes about 20): 30
   // leagues a minute, so 300 leagues take 10 minutes. Spread them wider, or cache more of Sleeper, past that.
   for (let i = 0; i < fresh.length; i += 100) {
-    await env.RECAP.createBatch(fresh.slice(i, i + 100).map((params, j) =>
-      ({ id: `${params.league_id}-${params.season}-${params.week}-${params.kind}`, params: { ...params, delay: 2 * (i + j) } })));
+    try {
+      await env.RECAP.createBatch(fresh.slice(i, i + 100).map((params, j) =>
+        ({ id: `${params.league_id}-${params.season}-${params.week}-${params.kind}`, params: { ...params, delay: 2 * (i + j) } })));
+    } catch (err) { // release the claims not started yet, so the next tick tries them again (createBatch skips IDs it has)
+      await env.DB.batch(fresh.slice(i).map((j) => env.DB.prepare("DELETE FROM recaps WHERE league_id = ? AND season = ? AND week = ? AND kind = ? AND status = 'pending'")
+        .bind(j.league_id, j.season, j.week, j.kind)));
+      throw err;
+    }
   }
   return fresh.length;
 }
 
-/** Turn a league on: Stripe says it's paid. The first recap is the latest finished week, written now. */
-async function activate(env: Env, leagueId: string, session: string) {
-  const row = await findOrAdd(env, leagueId);
-  if (!row) return console.error(`paid for ${leagueId}, which isn't a Sleeper football league (checkout ${session}): refund it`);
-  await env.DB.batch([ // the editor key is the commissioner's login; /paid shows it
-    env.DB.prepare("UPDATE leagues SET paid_via = ? WHERE league_id = ? AND (paid_via IS NULL OR paid_via = 'showcase')").bind(session, leagueId),
-    env.DB.prepare("UPDATE leagues SET edit_key = COALESCE(edit_key, ?) WHERE league_id = ?").bind(crypto.randomUUID().replaceAll("-", ""), leagueId),
-  ]);
+/** Turn a league on: Stripe says it's paid. The first recap is the latest finished week, written now. A payment that can't
+ *  turn anything on (no league named, not a football league, a league that's already on) is flagged for a refund instead:
+ *  /health reports it, and /paid tells the buyer. */
+async function activate(env: Env, leagueId: string | null, session: string) {
+  const refund = async (why: string) => {
+    console.error(`refund checkout ${session}: ${why}`);
+    await env.DB.prepare("INSERT OR IGNORE INTO cache (key, value) VALUES (?, ?)").bind(`refund:${session}`, why).run();
+  };
+  const row = leagueId ? await findOrAdd(env, leagueId) : null;
+  if (!leagueId || !row) return refund(leagueId ? `${leagueId} isn't a Sleeper football league` : "the checkout didn't name a league");
+  const on = await env.DB.prepare("UPDATE leagues SET paid_via = ? WHERE league_id = ? AND (paid_via IS NULL OR paid_via IN ('showcase', ?))")
+    .bind(session, leagueId, session).run(); // (the same session again is Stripe redelivering)
+  if (!on.meta.changes) return refund(`${row.slug} was already on (${row.paid_via})`);
+  // the editor key is the commissioner's login; /paid shows it
+  await env.DB.prepare("UPDATE leagues SET edit_key = COALESCE(edit_key, ?) WHERE league_id = ?").bind(crypto.randomUUID().replaceAll("-", ""), leagueId).run();
   const week = Number((await get(`${API}/league/${leagueId}`)).settings.last_scored_leg || 0);
   if (week) await enqueue(env, row.season, [{ week, kind: "weekly" }], leagueId);
 }
@@ -211,7 +231,7 @@ async function findOrAdd(env: Env, id: string): Promise<League | null> {
   const find = () => env.DB.prepare("SELECT * FROM leagues WHERE league_id = ?").bind(id).first<League>();
   const row = await find();
   if (row) return row;
-  const lg = await get(`${API}/league/${id}`, null);
+  const lg = await get(`${API}/league/${id}`, null, 300); // cached: repeat lookups of one ID cost Sleeper nothing
   if (!lg || lg.sport !== "nfl") return null;
   const prev = lg.previous_league_id
     ? await env.DB.prepare("SELECT * FROM leagues WHERE league_id = ?").bind(lg.previous_league_id).first<League>() : null;
@@ -239,7 +259,16 @@ async function renewComps(env: Env, season: string) {
   }
 }
 
-/** Once a day: drop what visitors and failures leave behind, so storage grows only with paid leagues' recaps (about
+/** Once a day, year-round: refresh the player list, tidy storage, and look for comped leagues Sleeper renewed. */
+async function daily(env: Env, season: string) {
+  const row = await env.DB.prepare("SELECT updated_at FROM cache WHERE key = 'players'").first<{ updated_at: string }>();
+  if (row && Date.now() - Date.parse(`${row.updated_at.replace(" ", "T")}Z`) < 20 * 3600e3) return;
+  await players(env.DB, true);
+  await tidy(env.DB);
+  await renewComps(env, season);
+}
+
+/** Drop what visitors and failures leave behind, so storage grows only with paid leagues' recaps (about
  *  0.5 MB a league a season). Previews and unpaid leagues come back on the next visit. */
 async function tidy(db: D1Database) {
   await db.batch([
@@ -253,7 +282,7 @@ async function tidy(db: D1Database) {
 
 /** An unpaid league: its latest finished week with plain labels (no Claude, so it costs nothing), and the pass. */
 async function preview(env: Env, site: Site, row: League): Promise<Response> {
-  const lg = await get(`${API}/league/${row.league_id}`);
+  const lg = await get(`${API}/league/${row.league_id}`, undefined, 300); // cached: a busy preview costs Sleeper one call per 5 minutes
   const week = Number(lg.settings.last_scored_leg || 0);
   if (!week) return html(waitingPage(SHELL, site, lg, row.league_id, false));
   let doc = (await env.DB.prepare("SELECT doc FROM recaps WHERE league_id = ? AND season = ? AND week = ? AND kind = 'preview'")
@@ -310,19 +339,11 @@ export default {
     if (res.headers.get("content-type")?.startsWith("text/html")) res.headers.set("content-security-policy", await csp(SHELL));
     return res;
   },
-  // Every 15 minutes: once a day refresh the player list and tidy storage, then queue whatever's due for every active league.
+  // Every 15 minutes: the daily chores (year-round), then whatever's due for every active league.
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
-    const state = await get(`${API}/state/nfl`);
+    const state = await get(`${API}/state/nfl`), season = String(state.season);
+    ctx.waitUntil(daily(env, season));
     if (state.season_type !== "regular") return; // ponytail: fantasy seasons live in the regular season
-    const season = String(state.season);
-    ctx.waitUntil((async () => {
-      const row = await env.DB.prepare("SELECT updated_at FROM cache WHERE key = 'players'").first<{ updated_at: string }>();
-      if (!row || Date.now() - Date.parse(`${row.updated_at.replace(" ", "T")}Z`) > 20 * 3600e3) {
-        await players(env.DB, true);
-        await tidy(env.DB);
-        await renewComps(env, season);
-      }
-    })());
     const jobs = due(await get(SCHEDULE(season), []), Date.now());
     if (jobs.length) console.log(`queued ${await enqueue(env, season, jobs)} recaps (due: ${jobs.map((j) => `${j.week}:${j.kind}`).join(", ")})`);
   },
@@ -332,6 +353,8 @@ export default {
 async function route(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url), path = url.pathname;
   const site: Site = { brand: env.BRAND, origin: url.origin, price: env.PRICE, payLink: env.PAYMENT_LINK };
+  // The POSTs (the webhook, the editor) are small; nothing gets to make the Worker buffer a big body before it's checked.
+  if (req.method === "POST" && !(Number(req.headers.get("content-length")) <= 256 * 1024)) return new Response("Too large", { status: 413 });
   try {
     if (path === "/stripe/webhook") {
       if (req.method !== "POST") return new Response("POST only", { status: 405 });
@@ -355,19 +378,24 @@ async function route(req: Request, env: Env): Promise<Response> {
     }
     if (path === "/robots.txt") return new Response("User-agent: *\nDisallow: /go\nDisallow: /paid\nDisallow: /stripe/\nDisallow: /*/edit\n");
     if (path === "/terms") return html(termsPage(SHELL, site), 200, 3600);
-    if (path === "/health") { // for a monitor: 503 when anything failed, shipped without jokes, or stuck lately
+    if (path === "/health") { // for a monitor: 503 when anything failed, shipped without jokes or got stuck lately, or a payment needs a refund
       const h = await env.DB.prepare(`SELECT
           COUNT(CASE WHEN status = 'failed' AND updated_at > datetime('now', '-1 day') THEN 1 END) AS failed,
           COUNT(CASE WHEN status = 'done' AND kind = 'weekly' AND updated_at > datetime('now', '-1 day') AND json_extract(doc, '$.copy.by') = 'template' THEN 1 END) AS plain,
-          COUNT(CASE WHEN status = 'pending' AND updated_at < datetime('now', '-6 hours') THEN 1 END) AS stuck
-        FROM recaps WHERE kind != 'preview'`).first<{ failed: number; plain: number; stuck: number }>();
-      const ok = !h!.failed && !h!.plain && !h!.stuck;
+          COUNT(CASE WHEN status = 'pending' AND updated_at < datetime('now', '-6 hours') THEN 1 END) AS stuck,
+          (SELECT COUNT(*) FROM cache WHERE key LIKE 'refund:%') AS refunds
+        FROM recaps WHERE kind != 'preview'`).first<{ failed: number; plain: number; stuck: number; refunds: number }>();
+      const ok = !h!.failed && !h!.plain && !h!.stuck && !h!.refunds;
       return Response.json({ ok, ...h }, { status: ok ? 200 : 503, headers: { "cache-control": "no-store" } });
     }
     if (path === "/paid") { // Stripe's Payment Link sends buyers here with ?session={CHECKOUT_SESSION_ID}, which only they know
-      const row = await env.DB.prepare("SELECT slug, name, edit_key FROM leagues WHERE paid_via = ? AND edit_key IS NOT NULL")
-        .bind(url.searchParams.get("session") ?? "").first<{ slug: string; name: string; edit_key: string }>();
+      const session = url.searchParams.get("session") ?? ""; // only a checkout ID: paid_via also holds 'comp' and 'showcase'
+      const row = /^cs_(live|test)_[A-Za-z0-9]+$/.test(session) ? await env.DB.prepare("SELECT slug, name, edit_key FROM leagues WHERE paid_via = ? AND edit_key IS NOT NULL")
+        .bind(session).first<{ slug: string; name: string; edit_key: string }>() : null;
       if (row) return html(paidPage(SHELL, site, row), 200, 0, true);
+      if (await env.DB.prepare("SELECT 1 FROM cache WHERE key = ?").bind(`refund:${session}`).first()) {
+        return html(messagePage(SHELL, site, "We'll refund this one", `This payment couldn't turn a league on: the league already has a season pass, or the checkout didn't say which league it was for. We'll refund it in full within a few days. Questions: support@${new URL(env.ORIGIN).hostname}.`), 200, 0, true);
+      }
       return html(messagePage(SHELL, site, "Payment received", "Setting up your league now. This page checks again in a few seconds.")
         .replace("</head>", '<meta http-equiv="refresh" content="4"></head>'), 200, 0); // the webhook can trail the redirect by a moment
     }

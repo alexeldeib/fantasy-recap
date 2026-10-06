@@ -9,6 +9,7 @@ const USAGE = `node scripts/admin.ts <command> <league>
   comp <league>      Turn it on for free (your leagues, friends, prizes). Prints its editor link.
   off <league>       Turn it off: no more recaps, and its page goes back to the free preview.
   refund <league>    Refund its Stripe payment in full, then turn it off. Asks first.
+  refund <cs_...>    Refund one checkout that /health flagged (it couldn't turn a league on). Asks first.
   link <league>      Print its private editor link, for fixing any line by hand.
   redo <page URL>    Rewrite one post now (a Claude call or three). The old post stays up until the new one lands.
                      Or: redo <league> <week> [weekly | day-YYYY-MM-DD]. Asks first.
@@ -71,8 +72,8 @@ try {
     console.log(`${lg.slug} is off (it was ${lg.paid_via ?? "off already"}). Its posts stay stored; takedown deletes them.`);
     if (lg.paid_via?.startsWith("cs_")) console.log(`It was bought in Stripe checkout ${lg.paid_via}: refund it in the dashboard if it's owed.`);
   } else if (command === "refund") {
-    const lg = await find(arg), session = lg.paid_via ?? "";
-    if (!/^cs_(live|test)_\w+$/.test(session)) throw new Error(`${lg.slug} wasn't bought through Stripe (paid_via: ${lg.paid_via})`);
+    const lg = /^cs_(live|test)_\w+$/.test(arg) ? null : await find(arg), session = lg ? lg.paid_via ?? "" : arg;
+    if (!/^cs_(live|test)_\w+$/.test(session)) throw new Error(`${lg?.slug} wasn't bought through Stripe (paid_via: ${lg?.paid_via})`);
     const live = session.startsWith("cs_live_");
     const stripe = (...args: string[]) => {
       const out = run("stripe", [...args, ...(live ? ["--live"] : [])]);
@@ -82,7 +83,7 @@ try {
     try {
       const s = stripe("checkout", "sessions", "retrieve", session);
       await ask(`${s.payment_intent ? `Refund $${(s.amount_total / 100).toFixed(2)} to ${s.customer_details?.email ?? "the buyer"}`
-        : "Nothing was charged (a free-season code), so no refund"}, and turn off ${lg.name} (${lg.season})?`);
+        : "Nothing was charged (a free-season code), so no refund"}${lg ? `, and turn off ${lg.name} (${lg.season})` : ""}?`);
       if (s.payment_intent) {
         const r = stripe("refunds", "create", "-d", `payment_intent=${s.payment_intent}`);
         console.log(`refund ${r.id}: ${r.status}`);
@@ -90,8 +91,11 @@ try {
     } finally {
       if (live) run("stripe", ["switch", "context", STRIPE_ACCOUNT]); // back to the sandbox, so nothing else runs live by accident
     }
-    turnOff(lg);
-    console.log(`${lg.slug} is off.`);
+    sql(`DELETE FROM cache WHERE key = ${q(`refund:${session}`)}`); // clears /health's flag, if it had one
+    if (lg) {
+      turnOff(lg);
+      console.log(`${lg.slug} is off.`);
+    }
   } else if (command === "link") {
     console.log(editor(await find(arg)));
   } else if (command === "redo") {

@@ -247,9 +247,11 @@ export const foot = (league: string, archive: string, site: Site) => `<footer cl
 export const fine = (site: Site) => `Numbers from Sleeper. Jokes from Claude. A recap every Tuesday morning, quick hits after every game day. `
   + `<a href="${site.origin}/">Get ${e(site.brand)} for your league</a>. Not affiliated with Sleeper. <a href="${site.origin}/terms">Terms</a>.`;
 
-/** The free preview's banner: the numbers are real, the jokes switch on with a season pass. */
+/** The free preview's banner: the numbers are real, the jokes switch on with a season pass. A finished season (an old league
+ *  link: Sleeper gives each season a new league ID) gets no buy button, since there's nothing left to write. */
 export function previewBanner(site: Site, league: J, leagueId: string): string {
-  const pay = site.payLink ? `<a class="btn" href="${e(`${site.payLink}?client_reference_id=${leagueId}`)}">Turn on the jokes · ${e(site.price)}</a>`
+  const pay = league.status === "complete" ? `<p><b>This league's season is over.</b> When Sleeper renews it, paste the new league's link on the front page for next season's pass.</p>`
+    : site.payLink ? `<a class="btn" href="${e(`${site.payLink}?client_reference_id=${leagueId}`)}">Turn on the jokes · ${e(site.price)}</a>`
     : `<p><b>Season passes open soon.</b></p>`;
   return `<aside class="cta" aria-label="Free preview"><div class="cta-in"><p class="cta-k">Free preview · ${e(displayName(league.name))}</p>`
     + `<p>These are your league's real numbers with plain labels. A season pass adds the good part: a column, power-ranking takes and a joke on every trophy, written fresh every Tuesday, plus quick hits after every game day. One link for the group chat, all season.</p>`

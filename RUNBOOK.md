@@ -38,6 +38,8 @@ For giveaways at scale, make a 100%-off promotion code instead (Stripe dashboard
 
 ## Fixing what a post says
 
+**A leaked editor link:** run `npx wrangler d1 execute fantasy-recap --remote --command "UPDATE leagues SET edit_key = NULL WHERE slug = '<slug>'"`, then `node scripts/admin.ts link <league>` to make a new link. Send it to the commissioner.
+
 **Change some lines:** use the league's editor. It's the same page the commissioner gets, so you can fix any line, the league's lore, or the writer's brief. Saved changes show within a minute.
 
 ```bash
@@ -53,7 +55,7 @@ node scripts/admin.ts redo https://thebenchpress.app/double-dipper/2026/4/
 - For a game-day update, add its date: `.../2026/4/#2026-10-04`.
 - The old post stays up until the rewrite lands. A weekly recap takes 5 to 15 minutes; a game day takes a minute or two.
 - A rewrite replaces any hand edits, and costs a Claude call or three.
-- If the rewrite fails, the post disappears until you run `redo` again.
+- If the rewrite fails, the old post stays up. Check `npx wrangler workflows instances describe recap <id>` for the error.
 
 ## Taking a league down
 
@@ -72,6 +74,12 @@ The Health workflow checks `https://thebenchpress.app/health` every 6 hours, and
   - The facts step hit a bug.
 - **`plain`:** a weekly recap shipped with plain labels, because Claude failed three times. Check status.anthropic.com.
 - **`stuck`:** a recap has been pending for over 6 hours.
+- **`refunds`:** a payment came in that couldn't turn a league on. Either the league already had a pass (two managers both paid), the checkout didn't name a league (someone used the bare Payment Link), or the ID wasn't a football league. The buyer's page already says a refund is coming. To list them and refund one (which also clears the flag):
+
+```bash
+npx wrangler d1 execute fantasy-recap --remote --command "SELECT key, value, updated_at FROM cache WHERE key LIKE 'refund:%'"
+node scripts/admin.ts refund <cs_live_... from the key>
+```
 
 To find the problem:
 
@@ -82,7 +90,9 @@ npx wrangler workflows instances describe recap <instance id>   # each step, its
 npx wrangler tail fantasy-recap                                   # live logs
 ```
 
-Fix the cause, then `node scripts/admin.ts redo` each affected post. The check goes green once a full day passes with nothing failed.
+Fix the cause, then `node scripts/admin.ts redo` each affected post. The check goes green once a full day passes with nothing failed and no refunds are waiting.
+
+Sleeper outages fix themselves: a recap's facts step retries with backoff for about two hours before it fails.
 
 ## Paid, but the league isn't on
 
@@ -130,6 +140,10 @@ Set a monthly spend limit on the Anthropic workspace that holds the API key. Tha
   - **Comped leagues** carry over on their own: a daily check finds the renewed league.
   - **Paid leagues** need a new pass. Once anyone opens the renewed league, its page shows the preview and the buy button, at the same address.
 - Before next season, make fresh free-season codes; the current ones expire Feb 15, 2027.
+
+## Hardening (optional)
+
+A Cloudflare rate-limiting rule (dashboard → thebenchpress.app → Security → WAF → Rate limiting rules) on `/go` and on paths that are only digits would stop anyone from using the site to hammer Sleeper with made-up league IDs. Something like 30 requests per minute per IP. Previews are already cached for 5 minutes per league, and unpaid leagues expire on their own.
 
 ## Costs
 

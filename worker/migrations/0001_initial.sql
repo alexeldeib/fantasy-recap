@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS leagues (
 CREATE INDEX IF NOT EXISTS leagues_slug ON leagues (slug, season);
 
 -- Every recap: the weekly one ('weekly'), game-day updates ('day-2026-10-04'), and free previews ('preview').
--- A recap whose row exists is never written again; delete the row to have the next cron tick redo it.
+-- A recap whose row exists is never queued again; `node scripts/admin.ts redo` rewrites one.
 CREATE TABLE IF NOT EXISTS recaps (
   league_id TEXT NOT NULL,
   season TEXT NOT NULL,

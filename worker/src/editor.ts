@@ -51,8 +51,8 @@ const view = (shell: string, site: Site, lg: J, title: string, inner: string) =>
     + `<main><section class="seg"><div class="day">${inner}</div></section></main>` + foot(lg.name, "", site),
 })), 200, 0, true);
 
-const box = (name: string, label: string, text: string, hint = "") =>
-  `<label>${e(label)}${hint ? `<span>${e(hint)}</span>` : ""}<textarea name="${e(name)}" rows="${Math.min(12, Math.ceil((text.length + 1) / 64))}">${e(text)}</textarea></label>`;
+const box = (name: string, label: string, text: string, hint = "", max = MAX) => `<label>${e(label)}${hint ? `<span>${e(hint)}</span>` : ""}`
+  + `<textarea name="${e(name)}" maxlength="${max}" rows="${Math.min(12, Math.ceil((text.length + 1) / 64))}">${e(text)}</textarea></label>`;
 
 /** GET shows a form and POST saves it: the league's settings and its posts (no `post`), or one post's copy. */
 export async function editor(req: Request, db: D1Database, site: Site, shell: string, slug: string): Promise<Response> {
@@ -79,7 +79,7 @@ export async function editor(req: Request, db: D1Database, site: Site, shell: st
       + (url.searchParams.has("saved") ? `<p class="pen">SAVED</p>` : "")
       + `<form class="ed-form" method="post">${hidden}`
       + box("intro", "The writer's brief", lg.intro, "Optional. Who the league is, in a sentence. Empty uses the default.")
-      + box("lore", "League lore", JSON.parse(lg.lore || "[]").join("\n"), "One per line: in-jokes, rivalries, nicknames, past champions. The writer works them into the next recaps.")
+      + box("lore", "League lore", JSON.parse(lg.lore || "[]").join("\n"), "One per line, up to 40 lines of 300 characters: in-jokes, rivalries, nicknames, past champions. The writer works them into the next recaps.", 40 * 301)
       + `<button class="btn" type="submit">Save</button></form>`
       + `<h2 class="day-h">Fix a post</h2><ol class="posts" role="list">${posts.map((p) => `<li><a class="post${p.kind === "weekly" ? " recap" : ""}" `
         + `href="${e(`${self}&post=${p.week}/${p.kind}`)}"><span class="sum-day">${postDay(p)}</span><span class="sum-h"><b>${e(p.headline || "")}</b>`

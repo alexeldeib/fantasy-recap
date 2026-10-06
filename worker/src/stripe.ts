@@ -17,11 +17,12 @@ export async function verify(body: string, header: string | null, secret: string
   return null;
 }
 
-/** The league a paid checkout is for: the Payment Link carries it as client_reference_id. A free-season promotion code
- *  makes a $0 checkout, which Stripe marks no_payment_required rather than paid. */
-export function paidLeague(event: any): { leagueId: string; session: string } | null {
+/** A paid checkout and the league it's for: the Payment Link carries the league as client_reference_id. `leagueId` is null
+ *  when the checkout doesn't name one (someone used the bare link), so the payment can be flagged for a refund. A
+ *  free-season promotion code makes a $0 checkout, which Stripe marks no_payment_required rather than paid. */
+export function paidLeague(event: any): { leagueId: string | null; session: string } | null {
   if (!["checkout.session.completed", "checkout.session.async_payment_succeeded"].includes(event?.type)) return null;
   const s = event.data?.object ?? {};
-  if (!["paid", "no_payment_required"].includes(s.payment_status) || !/^\d{6,24}$/.test(s.client_reference_id ?? "")) return null;
-  return { leagueId: s.client_reference_id, session: s.id };
+  if (!["paid", "no_payment_required"].includes(s.payment_status) || typeof s.id !== "string") return null;
+  return { leagueId: /^\d{6,24}$/.test(s.client_reference_id ?? "") ? s.client_reference_id : null, session: s.id };
 }

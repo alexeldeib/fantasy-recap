@@ -7,20 +7,26 @@ const PROJECTIONS = (season: string, week: number) => `https://api.sleeper.com/p
   + "&position%5B%5D=QB&position%5B%5D=RB&position%5B%5D=WR&position%5B%5D=TE&position%5B%5D=K&position%5B%5D=DEF";
 export const SCHEDULE = (season: string) => `https://api.sleeper.com/schedule/nfl/regular/${season}`;
 
-/** Fetch JSON. Required endpoints throw; optional ones pass a fallback. Sleeper answers an unknown league with null.
- *  `ttl` (seconds) lets Cloudflare's cache answer repeats: the NFL-wide data every league in a burst asks for. */
-export async function get(url: string, fallback?: J, ttl = 0): Promise<J> {
+/** Fetch JSON. `fallback` stands in for data that isn't there: a 404, or the null Sleeper answers for an unknown league.
+ *  Anything else that goes wrong (a 5xx, a 429, a timeout) throws, so a workflow step retries instead of mistaking an
+ *  outage for "no games this week"; `soft` lets optional data fall back on those too. `ttl` (seconds) lets Cloudflare's
+ *  cache answer repeats: the NFL-wide data every league in a burst asks for. */
+export async function get(url: string, fallback?: J, ttl = 0, soft = false): Promise<J> {
+  let body: J = null;
   try {
     const r = await fetch(url, { headers: { "user-agent": "fantasy-recap" }, // api.sleeper.com 403s requests without one
       ...(ttl && { cf: { cacheTtl: ttl, cacheEverything: true } }) });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const body = await r.json();
-    if (body === null && fallback === undefined) throw new Error("not found");
-    return body ?? fallback;
+    if (r.status !== 404) {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      body = await r.json();
+    }
   } catch (err) {
-    if (fallback === undefined) throw new Error(`Sleeper ${url.split("?")[0]}: ${err}`);
-    return fallback;
+    if (soft && fallback !== undefined) return fallback;
+    throw new Error(`Sleeper ${url.split("?")[0]}: ${err}`);
   }
+  if (body !== null) return body;
+  if (fallback === undefined) throw new Error(`Sleeper ${url.split("?")[0]}: not found`);
+  return fallback;
 }
 
 const FIELDS = ["position", "fantasy_positions", "first_name", "last_name", "full_name", "team", "injury_status"];
@@ -45,11 +51,12 @@ export function sleeper(leagueId: string, db?: D1Database): Source {
   const base = `${API}/league/${leagueId}`;
   return {
     league: () => get(base), users: () => get(`${base}/users`), rosters: () => get(`${base}/rosters`),
-    matchups: (week, fallback) => get(`${base}/matchups/${week}`, fallback), transactions: (week) => get(`${base}/transactions/${week}`, []),
+    matchups: (week, fallback) => get(`${base}/matchups/${week}`, fallback), transactions: (week) => get(`${base}/transactions/${week}`, [], 0, true),
     // The same 1-2 MB for every league: cached a minute, so a burst of recaps (staggered 2 seconds apart) shares one
     // request. Not the schedule: its "complete" flags decide what a game-day update counts, and must be fresh.
-    stats: (season, week) => get(`${API}/stats/nfl/regular/${season}/${week}`, {}, 60),
-    projections: (season, week) => get(PROJECTIONS(season, week), [], 60), schedule: (season) => get(SCHEDULE(season), []),
+    // Stats, projections and transactions are extras: a recap can ship without them, so they fall back on errors too.
+    stats: (season, week) => get(`${API}/stats/nfl/regular/${season}/${week}`, {}, 60, true),
+    projections: (season, week) => get(PROJECTIONS(season, week), [], 60, true), schedule: (season) => get(SCHEDULE(season), []),
     players: () => players(db), brackets: () => Promise.all([get(`${base}/winners_bracket`, []), get(`${base}/losers_bracket`, [])]),
   };
 }
