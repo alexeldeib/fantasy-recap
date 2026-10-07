@@ -77,6 +77,12 @@ export const EXTRA_CSS = `<style>
 .post .sum-h { padding-right: 16px; }
 .post .sum-h span { color: var(--chalk-2); font-size: .95rem; letter-spacing: 0; line-height: 1.45; }
 .post.recap .sum-day { background: var(--volt); }
+/* Lineup PSA: one status column, as wide as the widest chip (NO GAME on one line) and shared by every row, so the text lines
+   up. The recap template's fixed 3.4rem column fit OUT but squeezed NO GAME onto two lines against the text. The 5rem is for
+   browsers without subgrid. */
+.psa ul { display: grid; grid-template-columns: max-content minmax(0, 1fr); }
+.psa li { grid-column: 1 / -1; grid-template-columns: 5rem minmax(0, 1fr); grid-template-columns: subgrid; padding-inline: 10px; column-gap: 10px; }
+.psa .st { white-space: nowrap; letter-spacing: .04em; padding-inline: 6px; }
 .ed-form { display: grid; gap: 18px; max-width: 46rem; }
 .ed-form label { display: grid; gap: 6px; color: var(--chalk); font-weight: 700; }
 .ed-form label span { color: var(--chalk-3); font-weight: 400; font-size: .9rem; }
