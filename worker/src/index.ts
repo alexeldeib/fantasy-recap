@@ -7,13 +7,13 @@ import GAMEDAY from "./prompts/gameday.md";
 import PUNCHUP from "./prompts/punchup.md";
 import WRITER from "./prompts/writer.md";
 import { editor } from "./editor.ts";
-import { build, type J, pairs } from "./facts.ts";
+import { build, type J, pairs, type Source } from "./facts.ts";
 import { buildDay, weekday, worthPosting } from "./live.ts";
 import { csp, dayPage, dayTail, feedPage, feedStrip, finish, fine, html, landing, messagePage, paidPage, type Post, previewBanner, type Site,
   slugFor, termsPage, waitingPage } from "./pages.ts";
 import { displayName, page } from "./render.ts";
-import { type Due, due } from "./schedule.ts";
-import { API, get, players, SCHEDULE, sleeper } from "./sleeper.ts";
+import { type Due, due, scheduleAge } from "./schedule.ts";
+import { API, get, kept, nflSchedule, players, sleeper } from "./sleeper.ts";
 import { paidLeague, verify } from "./stripe.ts";
 import { ask, askLater, fillBrief, GAMEDAY_SCHEMA, research, type Spend, templateCopy } from "./writer.ts";
 
@@ -57,8 +57,13 @@ export class RecapWorkflow extends WorkflowEntrypoint<Env, Job> {
     try {
       // Retries back off for about two hours, so a Sleeper outage on Tuesday morning delays the recap instead of losing it.
       facts = await step.do("facts", { retries: { limit: 6, delay: "2 minutes", backoff: "exponential" }, timeout: "5 minutes" }, async () => {
-        if (!pairs(await sl.matchups(week, [])).length) return null; // no games this week: a bye, or the league's season is over
-        return day ? buildDay(sl, week, day) : build(sl, week);
+        const now = await sl.matchups(week, []);
+        if (!pairs(now).length) return null; // no games this week: a bye, or the league's season is over
+        // This week's scores from the check above, and settled weeks (two or more back, after Sleeper's stat corrections)
+        // kept in D1 for the season, so a week-17 recap doesn't ask Sleeper for all 17 weeks again.
+        const src: Source = { ...sl, matchups: (w, fallback) => (w === week ? Promise.resolve(now)
+          : w <= week - 2 ? kept(db, `matchups:${league_id}:${w}`, 365 * 24 * 3600e3, () => sl.matchups(w, fallback)) : sl.matchups(w, fallback)) };
+        return day ? buildDay(src, week, day) : build(src, week);
       });
     } catch (err) {
       console.error(`facts failed for ${league_id} ${kind} week ${week}: ${err}`);
@@ -167,7 +172,7 @@ async function sharedNews(db: D1Database, client: Anthropic, key: string, when: 
 /** A week's news for its recap: the week's game-day briefs, already searched and shared, or (if any is missing) one
  *  shared search for the whole week. Nothing is searched per league. */
 async function weekNews(db: D1Database, client: Anthropic, season: string, week: number): Promise<[string | null, Spend | null]> {
-  const dates = [...new Set<string>((await get(SCHEDULE(season), [])).filter((x: J) => x.week === week).map((x: J) => x.date))].sort();
+  const dates = [...new Set<string>((await nflSchedule(db, season)).filter((x: J) => x.week === week).map((x: J) => x.date))].sort();
   const briefs = await Promise.all(dates.map((d) => db.prepare("SELECT value FROM cache WHERE key = ?").bind(`news:${d}`).first<{ value: string }>()));
   if (dates.length && briefs.every((b) => b?.value && b.value !== SEARCHING)) {
     return [dates.map((d, i) => `${weekday(d)}:\n${briefs[i]!.value}`).join("\n\n"), null];
@@ -184,7 +189,7 @@ async function enqueue(env: Env, season: string, jobs: Due[], only?: string): Pr
   const claimed = await env.DB.batch(want.map((j) =>
     env.DB.prepare("INSERT OR IGNORE INTO recaps (league_id, season, week, kind, status) VALUES (?, ?, ?, ?, 'pending')").bind(j.league_id, j.season, j.week, j.kind)));
   const fresh = want.filter((_, i) => claimed[i]!.meta.changes);
-  // ponytail: 2 seconds apart keeps a burst under Sleeper's 1,000 requests a minute (a weekly recap makes week + 11): 30
+  // ponytail: 2 seconds apart keeps a burst well under Sleeper's 1,000 requests a minute (a weekly recap makes about 8): 30
   // leagues a minute, so 300 leagues take 10 minutes. Spread them wider, or cache more of Sleeper, past that.
   for (let i = 0; i < fresh.length; i += 100) {
     try {
@@ -266,6 +271,8 @@ async function tidy(db: D1Database) {
     db.prepare("UPDATE recaps SET status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE status = 'pending' AND updated_at < datetime('now', '-2 days')"),
     db.prepare("DELETE FROM recaps WHERE status IN ('failed', 'skipped') AND updated_at < datetime('now', '-30 days')"),
     db.prepare("DELETE FROM cache WHERE key LIKE 'news:%' AND updated_at < datetime('now', '-21 days')"),
+    db.prepare("DELETE FROM cache WHERE (key LIKE 'stats:%' OR key LIKE 'projections:%') AND updated_at < datetime('now', '-14 days')"),
+    db.prepare("DELETE FROM cache WHERE key LIKE 'matchups:%' AND updated_at < datetime('now', '-200 days')"),
     db.prepare("DELETE FROM leagues WHERE paid_via IS NULL AND created_at < datetime('now', '-30 days') AND league_id NOT IN (SELECT league_id FROM recaps)"),
   ]);
 }
@@ -331,10 +338,10 @@ export default {
   },
   // Every 15 minutes: the daily chores (year-round), then whatever's due for every active league.
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
-    const state = await get(`${API}/state/nfl`), season = String(state.season);
+    const state = await kept(env.DB, "state", 24 * 3600e3, () => get(`${API}/state/nfl`)), season = String(state.season); // a day old is fine
     ctx.waitUntil(daily(env, season));
     if (state.season_type !== "regular") return; // ponytail: fantasy seasons live in the regular season
-    const jobs = due(await get(SCHEDULE(season), []), Date.now());
+    const jobs = due(await nflSchedule(env.DB, season, (s) => scheduleAge(s, Date.now())), Date.now());
     if (jobs.length) console.log(`queued ${await enqueue(env, season, jobs)} recaps (due: ${jobs.map((j) => `${j.week}:${j.kind}`).join(", ")})`);
   },
 };

@@ -4,7 +4,7 @@ import type { J } from "./facts.ts";
 
 export interface Due { week: number; kind: string } // kind: "weekly" or "day-<date>"
 
-const HOUR = 3600e3;
+const HOUR = 3600e3, MINUTE = 60e3;
 const noon = (date: string) => Date.parse(`${date}T12:00:00Z`);
 
 /** A game-day update once all of a day's games are final (for 60 hours after that day; older ones are skipped), and
@@ -25,4 +25,18 @@ export function due(schedule: J[], now: number): Due[] {
     if (now >= recapAt + (final ? 0 : 24 * HOUR) && now - recapAt < 120 * HOUR) out.push({ week, kind: "weekly" });
   }
   return out;
+}
+
+/** How old the cron's copy of the schedule may be. Only finals matter, and a game day's last game ends 11pm to 1am
+ *  Eastern (3 to 6am UTC the next day): fresh each tick then, so its update goes out within 15 minutes. Hourly while a
+ *  game that should be over isn't final (overtime, a delay, a postponement), for three days. Otherwise a day old is fine. */
+export function scheduleAge(schedule: J[], now: number): number {
+  let age = 24 * HOUR;
+  for (const g of schedule) {
+    if (g.status === "complete") continue;
+    const since = now - Date.parse(`${g.date}T00:00:00Z`);
+    if (since >= 27 * HOUR && since < 30 * HOUR) return 10 * MINUTE;
+    if (since >= 30 * HOUR && since < 72 * HOUR) age = HOUR;
+  }
+  return age;
 }

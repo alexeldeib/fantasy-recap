@@ -1,11 +1,12 @@
-// Sleeper's public API from the Worker: read-only, no key. The NFL player list is cached in D1, since Sleeper asks
-// apps to fetch it at most once a day.
-import type { J, Source } from "./facts.ts";
+// Sleeper's public API from the Worker: read-only, no key. What doesn't need asking twice is kept in D1 (kept()): the NFL
+// player list for a day, as Sleeper asks; the NFL-wide stats, projections and schedule for minutes, so a burst of leagues
+// asks once; and the cron's NFL state and schedule for as long as nothing can change (see schedule.ts scheduleAge).
+import { type J, type Source, STATS } from "./facts.ts";
 
 export const API = "https://api.sleeper.app/v1";
 const PROJECTIONS = (season: string, week: number) => `https://api.sleeper.com/projections/nfl/${season}/${week}?season_type=regular`
   + "&position%5B%5D=QB&position%5B%5D=RB&position%5B%5D=WR&position%5B%5D=TE&position%5B%5D=K&position%5B%5D=DEF";
-export const SCHEDULE = (season: string) => `https://api.sleeper.com/schedule/nfl/regular/${season}`;
+const SCHEDULE = (season: string) => `https://api.sleeper.com/schedule/nfl/regular/${season}`;
 
 /** Fetch JSON. `fallback` stands in for data that isn't there: a 404, or the null Sleeper answers for an unknown league.
  *  Anything else that goes wrong (a 5xx, a 429, a timeout) throws, so a workflow step retries instead of mistaking an
@@ -29,6 +30,36 @@ export async function get(url: string, fallback?: J, ttl = 0, soft = false): Pro
   return fallback;
 }
 
+const MINUTE = 60e3;
+
+/** `fetch()`'s answer, kept in D1 under `key` for `maxAge` ms, or for as long as `maxAge(kept value)` says. An empty answer
+ *  isn't kept, so one bad fetch can't blank a burst of leagues. */
+export async function kept(db: D1Database, key: string, maxAge: number | ((value: J) => number), fetch: () => Promise<J>): Promise<J> {
+  const row = await db.prepare("SELECT value, updated_at FROM cache WHERE key = ?").bind(key).first<{ value: string; updated_at: string }>();
+  if (row) {
+    const value = JSON.parse(row.value), age = Date.now() - Date.parse(`${row.updated_at.replace(" ", "T")}Z`);
+    if (age < (typeof maxAge === "number" ? maxAge : maxAge(value))) return value;
+  }
+  const value = await fetch();
+  if (value && Object.keys(value).length) {
+    await db.prepare("INSERT OR REPLACE INTO cache (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)").bind(key, JSON.stringify(value)).run();
+  }
+  return value;
+}
+
+/** Only the stat lines the recaps print, for players who have any: a few percent of Sleeper's 1-2 MB. */
+export const trimStats = (raw: J): J => Object.fromEntries(Object.entries<J>(raw ?? {}).flatMap(([pid, s]) => {
+  const line = STATS.filter(([k]) => s?.[k]).map(([k]) => [k, s[k]]);
+  return line.length ? [[pid, Object.fromEntries(line)]] : [];
+}));
+/** Only each player's projected points, in the three scorings. */
+export const trimProjections = (raw: J[]): J[] => (raw ?? []).map((x: J) => ({ player_id: x.player_id,
+  stats: Object.fromEntries(["pts_ppr", "pts_half_ppr", "pts_std"].filter((k) => x.stats?.[k] != null).map((k) => [k, x.stats[k]])) }));
+
+/** The NFL schedule, kept in D1: for 10 minutes by default (a burst of recaps shares it), or as the cron says. */
+export const nflSchedule = (db: D1Database, season: string, maxAge: number | ((s: J) => number) = 10 * MINUTE) =>
+  kept(db, `schedule:${season}`, maxAge, () => get(SCHEDULE(season), []));
+
 const FIELDS = ["position", "fantasy_positions", "first_name", "last_name", "full_name", "team", "injury_status"];
 const FANTASY = new Set(["QB", "RB", "WR", "TE", "K", "DEF", "DL", "LB", "DB"]);
 
@@ -49,14 +80,15 @@ export async function players(db?: D1Database, refresh = false): Promise<J> {
 
 export function sleeper(leagueId: string, db?: D1Database): Source {
   const base = `${API}/league/${leagueId}`;
+  // The NFL-wide data is the same for every league: kept 10 minutes, so a burst of recaps (2 seconds apart) asks once.
+  // Stats, projections and transactions are extras: a recap can ship without them, so they fall back on errors too.
+  const shared = (key: string, fetch: () => Promise<J>) => (db ? kept(db, key, 10 * MINUTE, fetch) : fetch());
   return {
     league: () => get(base), users: () => get(`${base}/users`), rosters: () => get(`${base}/rosters`),
     matchups: (week, fallback) => get(`${base}/matchups/${week}`, fallback), transactions: (week) => get(`${base}/transactions/${week}`, [], 0, true),
-    // The same 1-2 MB for every league: cached a minute, so a burst of recaps (staggered 2 seconds apart) shares one
-    // request. Not the schedule: its "complete" flags decide what a game-day update counts, and must be fresh.
-    // Stats, projections and transactions are extras: a recap can ship without them, so they fall back on errors too.
-    stats: (season, week) => get(`${API}/stats/nfl/regular/${season}/${week}`, {}, 60, true),
-    projections: (season, week) => get(PROJECTIONS(season, week), [], 60, true), schedule: (season) => get(SCHEDULE(season), []),
+    stats: (season, week) => shared(`stats:${season}:${week}`, async () => trimStats(await get(`${API}/stats/nfl/regular/${season}/${week}`, {}, 0, true))),
+    projections: (season, week) => shared(`projections:${season}:${week}`, async () => trimProjections(await get(PROJECTIONS(season, week), [], 0, true))),
+    schedule: (season) => (db ? nflSchedule(db, season) : get(SCHEDULE(season), [])),
     players: () => players(db), brackets: () => Promise.all([get(`${base}/winners_bracket`, []), get(`${base}/losers_bracket`, [])]),
   };
 }

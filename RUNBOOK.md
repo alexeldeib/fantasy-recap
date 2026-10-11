@@ -55,6 +55,7 @@ node scripts/admin.ts redo https://thebenchpress.app/double-dipper-188480/2026/4
 - For a game-day update, add its date: `.../2026/4/#2026-10-04`.
 - The old post stays up until the rewrite lands. A weekly recap takes 5 to 15 minutes; a game day takes a minute or two.
 - A rewrite replaces any hand edits, and costs a Claude call or three.
+- Weeks two or more back come from D1, not Sleeper. If Sleeper corrected one of those after the fact, clear them first: `npx wrangler d1 execute fantasy-recap --remote --command "DELETE FROM cache WHERE key LIKE 'matchups:<league id>:%'"`.
 - If the rewrite fails, the old post stays up. Check `npx wrangler workflows instances describe recap <id>` for the error.
 
 ## Taking a league down

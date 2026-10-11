@@ -65,22 +65,32 @@ Storage grows only with paid leagues (about 0.5 MB a league a season). Previews,
 
 ## Sleeper API usage
 
-Counted from the requests the recap code makes, assuming no caching:
+Most of what the recaps read from Sleeper doesn't need asking twice, so it's kept in D1 (`kept()` in `src/sleeper.ts`):
 
-| Each... | Requests | League-specific | NFL-wide (the same for every league) |
-|---|---|---|---|
-| Weekly recap, week W | W + 11 | W + 6: league, users, rosters, every week's matchups so far, next week's, transactions | 5: stats, projections (2), schedule (2) |
-| Game-day update (about 3 a week) | 8 | 5: league, users, rosters, matchups (2) | 3: stats, projections, schedule |
-| Playoff week, extra | 2 per recap, 3 per game day | brackets, and the first leg's scores in a two-week round | |
+- **Per league:**
+  - A weekly recap makes about 8 requests: league, users, rosters, this week's and last week's scores, one newly settled week, next week's matchups, and transactions. Weeks two or more back are settled, since Sleeper's stat corrections are done by then, so they're kept for the season.
+  - A game-day update makes 4.
+- **Shared by every league:** the NFL's stats, projections and schedule are kept for 10 minutes, so a burst of leagues asks Sleeper once. Only the fields the recaps use are stored.
+- **The cron:**
+  - The NFL state, once a day.
+  - The schedule, once a day, except every 15 minutes in the hours a game night's last game ends (11pm to 2am Eastern, `scheduleAge()` in `src/schedule.ts`), and hourly while a game that should be over isn't final.
 
-- **Per paid league:** about 45 a week at midseason, rising with the week number. That's about 200 a month and about 780 over a 17-week season.
-- **Fixed, at any number of leagues:**
-  - The cron asks for the NFL state and schedule every 15 minutes: 192 a day in season, 96 off it.
-  - The player list is fetched once a day.
-  - Together that's about 5,800 a month in season.
-- **A free preview** costs about W + 10 the first time someone opens a league in a given week. After that it's cached.
+| Scope | Requests |
+|---|---|
+| Per paid league, per week | about 20 |
+| Per paid league, per month | about 90 |
+| Per paid league, per 17-week season | about 350 |
+| Fixed, at any number of leagues (cron, player list, the shared NFL data) | about 200 a month |
+| A free preview | about W + 6 the first time someone opens a league in a given week |
 
-**Rate.** Sleeper asks for under 1,000 requests a minute. Tuesday's recaps start two seconds apart, 30 leagues a minute, which peaks around 840 a minute at week 17. The NFL-wide stats and projections are cached for a minute, so a burst can share them. Past about 300 leagues, spread the starts wider, or cache past weeks' matchups, which barely change; that cuts W − 1 requests from every weekly recap.
+Measured against live Sleeper on week 4:
+- Double Dipper's recap made 13 requests: 9 league-specific and 4 NFL-wide.
+- La Liga's, right after, made 9, with no NFL-wide requests.
+- A recap whose settled weeks are already kept makes 7 or 8.
+
+Before these caches it was about 45 per league per week, plus 5,800 a month fixed.
+
+**Rate.** Sleeper asks for under 1,000 requests a minute. Tuesday's recaps start two seconds apart, 30 leagues a minute, at about 8 requests each: around 240 a minute.
 
 ## Development
 

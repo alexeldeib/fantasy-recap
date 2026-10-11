@@ -107,3 +107,15 @@ test("league addresses: the name plus the ID's last six digits, so same-named le
   assert.match(slugFor("x".repeat(80), "1393873211271188480", true), /^[a-z0-9-]{1,64}$/, "always fits the page route");
   assert.doesNotMatch(slugFor("2026", "1393873211271188480"), /^\d+$/, "never all digits, which would read as a raw league ID");
 });
+
+test("cron: the schedule is refreshed when a game night ends, hourly for a late final, otherwise daily", async () => {
+  const { scheduleAge } = await import("../src/schedule.ts");
+  const H = 3600e3, sunday = Date.parse("2026-10-04T00:00:00Z"); // Sunday's games are dated 2026-10-04 (Eastern)
+  const sched = (sun: string, mon = "pre_game") => [{ week: 4, date: "2026-10-04", status: sun }, { week: 4, date: "2026-10-05", status: mon }];
+  assert.equal(scheduleAge(sched("in_game"), sunday + 20 * H), 24 * H, "Sunday afternoon: nothing to finish yet that matters");
+  assert.equal(scheduleAge(sched("in_game"), sunday + 28 * H), 10 * 60e3, "Monday 4am UTC: the night game is ending, check each tick");
+  assert.equal(scheduleAge(sched("complete"), sunday + 28 * H), 24 * H, "once it's final, back to daily");
+  assert.equal(scheduleAge(sched("in_game"), sunday + 40 * H), H, "still not final (a delay, a postponement): hourly");
+  assert.equal(scheduleAge(sched("complete", "in_game"), sunday + 52 * H), 10 * 60e3, "Monday night's game, Tuesday 4am UTC");
+  assert.equal(scheduleAge(sched("in_game", "complete"), sunday + 80 * H), 24 * H, "after three days, daily again");
+});

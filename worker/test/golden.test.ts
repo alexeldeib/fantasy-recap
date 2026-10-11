@@ -6,6 +6,8 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { build } from "../src/facts.ts";
 import { page } from "../src/render.ts";
+import { buildDay } from "../src/live.ts";
+import { trimProjections, trimStats } from "../src/sleeper.ts";
 import { replay } from "./replay.ts";
 
 const SHELL = readFileSync(new URL("../src/page.html", import.meta.url), "utf8");
@@ -32,4 +34,15 @@ test("best ball: no trophies about lineup calls, since Sleeper sets every lineup
   const keys = f.awards.map((a: { key: string }) => a.key);
   for (const k of ["heartbreaker", "best_mgr", "worst_mgr", "best_bench", "bench_mvp"]) assert.ok(!keys.includes(k), k);
   assert.ok(keys.includes("high") && keys.includes("mvp"));
+});
+
+test("stats and projections trimmed for D1 build exactly the same facts", async () => {
+  const trim = (data: any) => Object.fromEntries(Object.entries(data).map(([k, v]) =>
+    [k, k.startsWith("stats:") ? trimStats(v) : k.startsWith("projections:") ? trimProjections(v as any[]) : v]));
+  for (const name of ["dd-week2", "dd-week3", "dd-week4", "ll-week1", "ll-week3"]) {
+    const data = replay(`${name}.json`).data, week = Number(name.slice(-1));
+    assert.deepEqual(plain(await build(replay(trim(data)), week)), plain(await build(replay(data), week)), name);
+  }
+  const live = replay("sleeper-live-week4.json").data;
+  assert.deepEqual(plain(await buildDay(replay(trim(live)), 4, "2026-10-04")), plain(await buildDay(replay(live), 4, "2026-10-04")), "a game day");
 });
