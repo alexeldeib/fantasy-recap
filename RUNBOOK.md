@@ -124,18 +124,18 @@ npx wrangler d1 time-travel restore fantasy-recap --timestamp 2026-10-06T12:00:0
 
 ## Data retention
 
-Storage holds steady as time passes and grows only with paying leagues. The daily tidy (`tidy()` in `src/index.ts`) enforces this:
+Every post we write is kept for good. What it was made from is not: in season it expires within weeks, and once the regular season ends (nothing gets written until next season) all of it goes. The daily tidy (`tidy()` in `src/index.ts`) enforces this:
 
 | What | Kept for |
 |---|---|
-| A league's posts and its row | This season and last. A renewed league inherits its address, lore and editor link from last season's row. The terms promise posts stay up through the following season. |
+| A league's posts and its row | For good. A takedown deletes them. The terms say posts stay up after the season ends. |
 | Free previews | 14 days |
 | Unpaid leagues | 30 days, once their previews are gone |
 | Failed or skipped recaps | 30 days. A recap stuck pending is marked failed after 2 days. |
-| News briefs | 21 days |
-| The shared NFL stats and projections | 14 days (each is used for minutes) |
-| A league's settled weeks | 200 days, through the end of its season |
-| The NFL schedule | This season's only |
+| News briefs | 21 days in season; gone when the season ends |
+| The shared NFL stats and projections | 14 days in season (each is used for minutes); gone when the season ends |
+| A league's settled weeks | Until the regular season ends |
+| The NFL schedule | This season's, until the season ends |
 | The NFL state and the player list | One row each, overwritten |
 | Refund flags | Until you refund them (`admin.ts refund <cs_...>`) |
 | Workflow run histories | 3 days (`wrangler.jsonc`) |
@@ -143,8 +143,8 @@ Storage holds steady as time passes and grows only with paying leagues. The dail
 
 **Sizes, measured:**
 - A weekly recap is about 17 KB and a game-day update about 11 KB, so a league's season of posts is about 0.8 MB.
-- Its settled weeks add about 0.2 MB while the season runs.
-- That's at most about 2 MB per paid league: 1,000 leagues is about 2 GB of D1's 10 GB. Past about 4,000 leagues, move post bodies to R2.
+- In season, its settled weeks add about 0.2 MB.
+- Everything except posts holds steady. Posts grow by about 0.8 MB per paid league per season: about 0.8 GB a season at 1,000 leagues, against D1's 10 GB. Past about 10,000 league-seasons, move older seasons' posts to R2.
 
 To see where storage stands:
 

@@ -256,33 +256,34 @@ async function renewComps(env: Env, season: string) {
 }
 
 /** Once a day, year-round: refresh the player list, tidy storage, and look for comped leagues Sleeper renewed. */
-async function daily(env: Env, season: string) {
+async function daily(env: Env, season: string, inSeason: boolean) {
   const row = await env.DB.prepare("SELECT updated_at FROM cache WHERE key = 'players'").first<{ updated_at: string }>();
   if (row && Date.now() - Date.parse(`${row.updated_at.replace(" ", "T")}Z`) < 20 * 3600e3) return;
-  await tidy(env.DB, season); // first: it needs nothing from Sleeper, so an outage can't hold it up
+  await tidy(env.DB, season, inSeason); // first: it needs nothing from Sleeper, so an outage can't hold it up
   await players(env.DB, true);
   await renewComps(env, season);
 }
 
-/** Once a day: drop what visitors, failures and old seasons leave behind, so storage holds steady as time passes and grows
- *  only with paying leagues. RUNBOOK.md (Data retention) lists what's kept how long. Previews and unpaid leagues come back
- *  on the next visit. */
-async function tidy(db: D1Database, season: string) {
-  // Old seasons go too, so storage holds steady instead of growing with time: this season and last stay (last season's
-  // row is what a renewed league inherits). A season that isn't a year matches nothing, so a bad value can't wipe it all.
-  const old = /^\d{4}$/.test(season) ? String(Number(season) - 2) : "0000";
-  // ponytail: posts live in D1 (10 GB), about 2 MB per paid league at most: room for about 4,000. Past that, posts go to R2.
+/** Once a day: drop what visitors, failures and finished seasons leave behind. Every post we've written stays for good; what
+ *  it was made from doesn't. In season, Sleeper's data and the news expire within weeks; out of season nothing gets written,
+ *  so all of it goes. RUNBOOK.md (Data retention) lists what's kept how long. Previews and unpaid leagues come back on the
+ *  next visit. */
+async function tidy(db: D1Database, season: string, inSeason: boolean) {
+  // ponytail: only posts accumulate, about 0.8 MB per paid league per season, and D1 holds 10 GB: past about 10,000
+  // league-seasons, move older seasons' posts to R2.
   await db.batch([
-    db.prepare("DELETE FROM recaps WHERE season <= ?").bind(old),
-    db.prepare("DELETE FROM leagues WHERE season <= ?").bind(old),
-    db.prepare("DELETE FROM cache WHERE key LIKE 'schedule:%' AND key != ?").bind(`schedule:${season}`),
     db.prepare("DELETE FROM recaps WHERE kind = 'preview' AND updated_at < datetime('now', '-14 days')"),
     db.prepare("UPDATE recaps SET status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE status = 'pending' AND updated_at < datetime('now', '-2 days')"),
     db.prepare("DELETE FROM recaps WHERE status IN ('failed', 'skipped') AND updated_at < datetime('now', '-30 days')"),
-    db.prepare("DELETE FROM cache WHERE key LIKE 'news:%' AND updated_at < datetime('now', '-21 days')"),
-    db.prepare("DELETE FROM cache WHERE (key LIKE 'stats:%' OR key LIKE 'projections:%') AND updated_at < datetime('now', '-14 days')"),
-    db.prepare("DELETE FROM cache WHERE key LIKE 'matchups:%' AND updated_at < datetime('now', '-200 days')"),
     db.prepare("DELETE FROM leagues WHERE paid_via IS NULL AND created_at < datetime('now', '-30 days') AND league_id NOT IN (SELECT league_id FROM recaps)"),
+    ...(inSeason ? [
+      db.prepare("DELETE FROM cache WHERE key LIKE 'news:%' AND updated_at < datetime('now', '-21 days')"),
+      db.prepare("DELETE FROM cache WHERE (key LIKE 'stats:%' OR key LIKE 'projections:%') AND updated_at < datetime('now', '-14 days')"),
+      db.prepare("DELETE FROM cache WHERE key LIKE 'matchups:%' AND updated_at < datetime('now', '-200 days')"),
+      db.prepare("DELETE FROM cache WHERE key LIKE 'schedule:%' AND key != ?").bind(`schedule:${season}`),
+    ] : [ // the season's done: everything it was made from goes
+      db.prepare("DELETE FROM cache WHERE key LIKE 'news:%' OR key LIKE 'stats:%' OR key LIKE 'projections:%' OR key LIKE 'matchups:%' OR key LIKE 'schedule:%'"),
+    ]),
   ]);
 }
 
@@ -348,7 +349,7 @@ export default {
   // Every 15 minutes: the daily chores (year-round), then whatever's due for every active league.
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
     const state = await kept(env.DB, "state", 24 * 3600e3, () => get(`${API}/state/nfl`)), season = String(state.season); // a day old is fine
-    ctx.waitUntil(daily(env, season));
+    ctx.waitUntil(daily(env, season, state.season_type === "regular"));
     if (state.season_type !== "regular") return; // ponytail: fantasy seasons live in the regular season
     const jobs = due(await nflSchedule(env.DB, season, (s) => scheduleAge(s, Date.now())), Date.now());
     if (jobs.length) console.log(`queued ${await enqueue(env, season, jobs)} recaps (due: ${jobs.map((j) => `${j.week}:${j.kind}`).join(", ")})`);
