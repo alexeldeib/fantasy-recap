@@ -4,6 +4,18 @@ Everything here runs from `worker/` against production, with your own logins: `n
 
 `node scripts/admin.ts <command> <league>` handles one league at a time. `<league>` can be any of its page URLs, its Sleeper link or league ID, or its slug. Anything that spends money or deletes data asks first.
 
+## Finding a league's links
+
+**Every active league's page and editor link:**
+
+```bash
+node scripts/admin.ts list
+```
+
+**A league's page:** paste its Sleeper link into the box on thebenchpress.app, or open `thebenchpress.app/<Sleeper league ID>`. Either redirects to its address, which is its name plus the last six digits of its Sleeper ID.
+
+**Customers** see their private editor link once, on the "You're in" page Stripe sends them to after checkout. It's their login, so there's no self-serve recovery. If they lose it, they email support. Look it up with `node scripts/admin.ts link <league>`, which takes their Sleeper link or page URL, and send it back. If you think it leaked, rotate it first (see "A leaked editor link" below).
+
 ## Support inbox
 
 support@thebenchpress.app forwards to the owner's Gmail, through Cloudflare Email Routing (dashboard → Email Service → Email Routing). Replies go out from that Gmail address. To change where mail lands, edit the routing rule there.

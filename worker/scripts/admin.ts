@@ -10,6 +10,7 @@ const USAGE = `node scripts/admin.ts <command> <league>
   off <league>       Turn it off: no more recaps, and its page goes back to the free preview.
   refund <league>    Refund its Stripe payment in full, then turn it off. Asks first.
   refund <cs_...>    Refund one checkout that /health flagged (it couldn't turn a league on). Asks first.
+  list               Every active league: its page and its private editor link.
   link <league>      Print its private editor link, for fixing any line by hand.
   redo <page URL>    Rewrite one post now (a Claude call or three). The old post stays up until the new one lands.
                      Or: redo <league> <week> [weekly | day-YYYY-MM-DD]. Asks first.
@@ -95,6 +96,10 @@ try {
     if (lg) {
       turnOff(lg);
       console.log(`${lg.slug} is off.`);
+    }
+  } else if (command === "list") {
+    for (const lg of sql("SELECT league_id, slug, name, season, paid_via, edit_key FROM leagues WHERE paid_via IS NOT NULL ORDER BY season DESC, slug") as League[]) {
+      console.log(`${lg.name} (${lg.season}, ${lg.paid_via!.startsWith("cs_") ? "paid" : lg.paid_via})\n  ${home(lg)}\n  ${editor(lg)}`);
     }
   } else if (command === "link") {
     console.log(editor(await find(arg)));
