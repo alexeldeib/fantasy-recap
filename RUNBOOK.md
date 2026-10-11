@@ -122,6 +122,36 @@ npx wrangler d1 time-travel info fantasy-recap --timestamp 2026-10-06T12:00:00Z
 npx wrangler d1 time-travel restore fantasy-recap --timestamp 2026-10-06T12:00:00Z
 ```
 
+## Data retention
+
+Storage holds steady as time passes and grows only with paying leagues. The daily tidy (`tidy()` in `src/index.ts`) enforces this:
+
+| What | Kept for |
+|---|---|
+| A league's posts and its row | This season and last. A renewed league inherits its address, lore and editor link from last season's row. The terms promise posts stay up through the following season. |
+| Free previews | 14 days |
+| Unpaid leagues | 30 days, once their previews are gone |
+| Failed or skipped recaps | 30 days. A recap stuck pending is marked failed after 2 days. |
+| News briefs | 21 days |
+| The shared NFL stats and projections | 14 days (each is used for minutes) |
+| A league's settled weeks | 200 days, through the end of its season |
+| The NFL schedule | This season's only |
+| The NFL state and the player list | One row each, overwritten |
+| Refund flags | Until you refund them (`admin.ts refund <cs_...>`) |
+| Workflow run histories | 3 days (`wrangler.jsonc`) |
+| D1 Time Travel | 30 days of restore points, automatic |
+
+**Sizes, measured:**
+- A weekly recap is about 17 KB and a game-day update about 11 KB, so a league's season of posts is about 0.8 MB.
+- Its settled weeks add about 0.2 MB while the season runs.
+- That's at most about 2 MB per paid league: 1,000 leagues is about 2 GB of D1's 10 GB. Past about 4,000 leagues, move post bodies to R2.
+
+To see where storage stands:
+
+```bash
+npx wrangler d1 execute fantasy-recap --remote --command "SELECT 'posts' AS what, COUNT(*) AS n, SUM(length(doc)) AS bytes FROM recaps UNION ALL SELECT 'cache', COUNT(*), SUM(length(value)) FROM cache UNION ALL SELECT 'leagues', COUNT(*), NULL FROM leagues"
+```
+
 ## Secrets
 
 Three secrets, none of them in the repo:

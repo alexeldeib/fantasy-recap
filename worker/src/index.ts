@@ -141,8 +141,9 @@ async function copies(db: D1Database, league: string, season: string, week: numb
 
 const SEARCHING = "\u0000searching";
 
-/** A stored recap leaves out what only the writer needed: the lineups, about half of a week's facts. */
-const slim = (doc: J): J => (doc?.facts?.lineups ? { ...doc, facts: { ...doc.facts, lineups: undefined } } : doc);
+/** A stored recap leaves out what only the writer needed: the lineups (about half of a week's facts), and the news brief
+ *  (the same for every league, and in the cache for 21 days; it was a fifth of every post). */
+const slim = (doc: J): J => doc && { ...doc, facts: doc.facts && { ...doc.facts, lineups: undefined }, copy: doc.copy && { ...doc.copy, news: undefined } };
 
 /** One web search shared by every league (a game day's big plays and memes, or a week's): the first league to need it
  *  claims the search, the rest wait for it rather than each paying for their own (the cron queues every league at once). */
@@ -258,15 +259,23 @@ async function renewComps(env: Env, season: string) {
 async function daily(env: Env, season: string) {
   const row = await env.DB.prepare("SELECT updated_at FROM cache WHERE key = 'players'").first<{ updated_at: string }>();
   if (row && Date.now() - Date.parse(`${row.updated_at.replace(" ", "T")}Z`) < 20 * 3600e3) return;
+  await tidy(env.DB, season); // first: it needs nothing from Sleeper, so an outage can't hold it up
   await players(env.DB, true);
-  await tidy(env.DB);
   await renewComps(env, season);
 }
 
-/** Drop what visitors and failures leave behind, so storage grows only with paid leagues' recaps (about
- *  0.5 MB a league a season). Previews and unpaid leagues come back on the next visit. */
-async function tidy(db: D1Database) {
+/** Once a day: drop what visitors, failures and old seasons leave behind, so storage holds steady as time passes and grows
+ *  only with paying leagues. RUNBOOK.md (Data retention) lists what's kept how long. Previews and unpaid leagues come back
+ *  on the next visit. */
+async function tidy(db: D1Database, season: string) {
+  // Old seasons go too, so storage holds steady instead of growing with time: this season and last stay (last season's
+  // row is what a renewed league inherits). A season that isn't a year matches nothing, so a bad value can't wipe it all.
+  const old = /^\d{4}$/.test(season) ? String(Number(season) - 2) : "0000";
+  // ponytail: posts live in D1 (10 GB), about 2 MB per paid league at most: room for about 4,000. Past that, posts go to R2.
   await db.batch([
+    db.prepare("DELETE FROM recaps WHERE season <= ?").bind(old),
+    db.prepare("DELETE FROM leagues WHERE season <= ?").bind(old),
+    db.prepare("DELETE FROM cache WHERE key LIKE 'schedule:%' AND key != ?").bind(`schedule:${season}`),
     db.prepare("DELETE FROM recaps WHERE kind = 'preview' AND updated_at < datetime('now', '-14 days')"),
     db.prepare("UPDATE recaps SET status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE status = 'pending' AND updated_at < datetime('now', '-2 days')"),
     db.prepare("DELETE FROM recaps WHERE status IN ('failed', 'skipped') AND updated_at < datetime('now', '-30 days')"),
