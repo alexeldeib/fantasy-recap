@@ -49,7 +49,7 @@ node scripts/admin.ts link <league>
 **Rewrite a post from scratch:** pass the post's URL. This rebuilds its facts from Sleeper's current numbers (so it also picks up stat corrections) and has Claude write it again.
 
 ```bash
-node scripts/admin.ts redo https://thebenchpress.app/double-dipper/2026/4/
+node scripts/admin.ts redo https://thebenchpress.app/double-dipper-188480/2026/4/
 ```
 
 - For a game-day update, add its date: `.../2026/4/#2026-10-04`.

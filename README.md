@@ -4,7 +4,7 @@ Weekly recaps for Sleeper fantasy football leagues that read like a sports colum
 
 Paste a league link and see a free preview of your latest week with your real numbers. A $25 season pass turns on the jokes: the full recap every Tuesday morning (headline, a column called The Rundown, power rankings with a take on every team, fifteen trophies, every score, next week's matchups) and a quick hit after every NFL game day. No accounts, no apps: the league's page is the product, at `thebenchpress.app/<league>`.
 
-Running on it: [Double Dipper](https://thebenchpress.app/double-dipper/) and [La Liga](https://thebenchpress.app/la-liga/), both comped. Their GitHub-era sites ([double-dipper](https://github.com/alexeldeib/double-dipper), [la-liga](https://github.com/alexeldeib/la-liga)) are archived.
+Running on it: [Double Dipper](https://thebenchpress.app/double-dipper-188480/) and [La Liga](https://thebenchpress.app/la-liga-323584/), both comped. Their GitHub-era sites ([double-dipper](https://github.com/alexeldeib/double-dipper), [la-liga](https://github.com/alexeldeib/la-liga)) are archived.
 
 **Operating it** (refunds, comps, fixing or rewriting a post, takedowns, incidents, secrets, restores): [RUNBOOK.md](RUNBOOK.md).
 
@@ -14,7 +14,7 @@ Everything lives in [`worker/`](worker/): one Cloudflare Worker, one D1 database
 
 | Piece | Job |
 |---|---|
-| `fetch` (`src/index.ts`) | Pages: `/` (landing), `/<slug>` (latest week), `/<slug>/<season>/<week>`, `/<slug>/feed` (every post), `/<slug>/edit` (the commissioner's editor), `/go?league=` (finds a league from any Sleeper link), `/paid` (Stripe's return trip), `/terms`, `/health`, `/stripe/webhook`. |
+| `fetch` (`src/index.ts`) | Pages: `/` (landing), `/<slug>` (latest week; a slug is the league's name plus the last six digits of its Sleeper ID, since names repeat), `/<slug>/<season>/<week>`, `/<slug>/feed` (every post), `/<slug>/edit` (the commissioner's editor), `/go?league=` (finds a league from any Sleeper link), `/paid` (Stripe's return trip), `/terms`, `/health`, `/stripe/webhook`. |
 | `scheduled`, every 15 min | Once a day: refresh the NFL player list, tidy storage, and find comped leagues that Sleeper renewed. Every tick: ask `due()` what's owed and queue it for every paid or comped league, two seconds apart. |
 | `RecapWorkflow` | One recap: facts, then the day's or week's shared news search, then Claude's copy, then save. Each step retries on its own, and a failure falls back a step, so the numbers always ship. The weekly draft and punch-up go through the Batch API (half price, and a long high-effort draft never holds a connection open). |
 | D1 (`migrations/`) | `leagues` (one row per league per season; `paid_via` says whether it's on), `recaps` (every weekly recap, game-day update and free preview), `cache` (the player list, each game day's news). |
@@ -63,9 +63,24 @@ That's about $12.50 of Claude per league per season against the $25 pass, plus a
 
 Storage grows only with paid leagues (about 0.5 MB a league a season). Previews, failures, unpaid leagues and old news expire on their own, and Workflow run histories are kept for three days.
 
-## Scale
+## Sleeper API usage
 
-Sleeper asks for under 1,000 requests a minute. A weekly recap makes about 20, so the cron starts leagues two seconds apart (30 a minute), and the NFL-wide stats and projections are cached for a minute so a burst shares them. That's 300 leagues in ten minutes on a Tuesday. Past that, spread the starts wider or cache more.
+Counted from the requests the recap code makes, assuming no caching:
+
+| Each... | Requests | League-specific | NFL-wide (the same for every league) |
+|---|---|---|---|
+| Weekly recap, week W | W + 11 | W + 6: league, users, rosters, every week's matchups so far, next week's, transactions | 5: stats, projections (2), schedule (2) |
+| Game-day update (about 3 a week) | 8 | 5: league, users, rosters, matchups (2) | 3: stats, projections, schedule |
+| Playoff week, extra | 2 per recap, 3 per game day | brackets, and the first leg's scores in a two-week round | |
+
+- **Per paid league:** about 45 a week at midseason, rising with the week number. That's about 200 a month and about 780 over a 17-week season.
+- **Fixed, at any number of leagues:**
+  - The cron asks for the NFL state and schedule every 15 minutes: 192 a day in season, 96 off it.
+  - The player list is fetched once a day.
+  - Together that's about 5,800 a month in season.
+- **A free preview** costs about W + 10 the first time someone opens a league in a given week. After that it's cached.
+
+**Rate.** Sleeper asks for under 1,000 requests a minute. Tuesday's recaps start two seconds apart, 30 leagues a minute, which peaks around 840 a minute at week 17. The NFL-wide stats and projections are cached for a minute, so a burst can share them. Past about 300 leagues, spread the starts wider, or cache past weeks' matchups, which barely change; that cuts W − 1 requests from every weekly recap.
 
 ## Development
 

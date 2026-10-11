@@ -10,7 +10,7 @@ import { editor } from "./editor.ts";
 import { build, type J, pairs } from "./facts.ts";
 import { buildDay, weekday, worthPosting } from "./live.ts";
 import { csp, dayPage, dayTail, feedPage, feedStrip, finish, fine, html, landing, messagePage, paidPage, type Post, previewBanner, type Site,
-  termsPage, waitingPage } from "./pages.ts";
+  slugFor, termsPage, waitingPage } from "./pages.ts";
 import { displayName, page } from "./render.ts";
 import { type Due, due } from "./schedule.ts";
 import { API, get, players, SCHEDULE, sleeper } from "./sleeper.ts";
@@ -34,7 +34,6 @@ interface League {
 }
 
 const LLM = { retries: { limit: 3, delay: "2 minutes", backoff: "exponential" }, timeout: "20 minutes" } as const; // rides out ~15 minutes of API trouble
-const RESERVED = new Set(["go", "stripe", "api", "admin", "about", "pricing", "terms", "paid", "health", "robots-txt", "favicon-ico"]);
 
 export class RecapWorkflow extends WorkflowEntrypoint<Env, Job> {
   async run(event: WorkflowEvent<Job>, step: WorkflowStep) {
@@ -185,7 +184,7 @@ async function enqueue(env: Env, season: string, jobs: Due[], only?: string): Pr
   const claimed = await env.DB.batch(want.map((j) =>
     env.DB.prepare("INSERT OR IGNORE INTO recaps (league_id, season, week, kind, status) VALUES (?, ?, ?, ?, 'pending')").bind(j.league_id, j.season, j.week, j.kind)));
   const fresh = want.filter((_, i) => claimed[i]!.meta.changes);
-  // ponytail: 2 seconds apart keeps a burst under Sleeper's 1,000 requests a minute (a weekly recap makes about 20): 30
+  // ponytail: 2 seconds apart keeps a burst under Sleeper's 1,000 requests a minute (a weekly recap makes week + 11): 30
   // leagues a minute, so 300 leagues take 10 minutes. Spread them wider, or cache more of Sleeper, past that.
   for (let i = 0; i < fresh.length; i += 100) {
     try {
@@ -219,12 +218,6 @@ async function activate(env: Env, leagueId: string | null, session: string) {
   if (week) await enqueue(env, row.season, [{ week, kind: "weekly" }], leagueId);
 }
 
-const slugify = (name: string): string => {
-  const s = displayName(name).normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/, "");
-  return !s ? "league" : /^\d+$/.test(s) ? `league-${s}` : s; // all digits would read as a league ID
-};
-
 /** A league's row, adding it the first time anyone looks it up. A renewed league (Sleeper gives each season a new ID) keeps
  *  last season's address, writer's notes and editor link, and a comp carries over; a paid season doesn't. */
 async function findOrAdd(env: Env, id: string): Promise<League | null> {
@@ -235,11 +228,8 @@ async function findOrAdd(env: Env, id: string): Promise<League | null> {
   if (!lg || lg.sport !== "nfl") return null;
   const prev = lg.previous_league_id
     ? await env.DB.prepare("SELECT * FROM leagues WHERE league_id = ?").bind(lg.previous_league_id).first<League>() : null;
-  let slug = prev?.slug;
-  for (let i = 1; !slug; i++) { // ponytail: check-then-insert; two leagues claiming one name in the same second could share it
-    const s = i === 1 ? slugify(lg.name) : `${slugify(lg.name)}-${i}`;
-    if (!RESERVED.has(s) && !(await env.DB.prepare("SELECT 1 FROM leagues WHERE slug = ? LIMIT 1").bind(s).first())) slug = s;
-  }
+  let slug = prev?.slug ?? slugFor(lg.name, id);
+  if (!prev && await env.DB.prepare("SELECT 1 FROM leagues WHERE slug = ? LIMIT 1").bind(slug).first()) slug = slugFor(lg.name, id, true);
   await env.DB.prepare(`INSERT OR IGNORE INTO leagues (league_id, slug, name, season, previous_league_id, paid_via, intro, lore, edit_key)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(id, slug, lg.name, String(lg.season), lg.previous_league_id ?? null,
     prev?.paid_via === "comp" ? "comp" : null, prev?.intro ?? "", prev?.lore ?? "[]", prev?.edit_key ?? null).run();

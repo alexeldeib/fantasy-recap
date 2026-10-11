@@ -7,6 +7,15 @@ import { esc as e, first, fixed, words } from "./py.ts";
 
 export interface Site { brand: string; origin: string; price: string; payLink: string }
 
+/** A league's address: its name, for people, and the last six digits of its Sleeper ID, since names repeat ("Dynasty
+ *  League"). It's fixed by the league itself, never first-come, so a freed address can't later land on another league.
+ *  `whole` uses the full ID: for the rare league with the same name and the same last six digits as one already here. */
+export function slugFor(name: string, id: string, whole = false): string {
+  const s = displayName(name).normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/, "");
+  return `${s || "league"}-${whole ? id : id.slice(-6)}`;
+}
+
 export const EXTRA_CSS = `<style>
 .cta { width: 100%; max-width: var(--max); margin-inline: auto; padding: 18px var(--gut) 0; }
 .cta-in { display: grid; gap: 12px; justify-items: start; background: var(--ink-2); border: 1px solid var(--line); border-left: 6px solid var(--volt); padding: 16px 18px 18px; }

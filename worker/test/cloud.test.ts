@@ -96,3 +96,14 @@ test("preview: a finished season's league gets no buy button", async () => {
   assert.match(previewBanner(site, { name: "L", status: "in_season" }, "123456"), /client_reference_id=123456/);
   assert.doesNotMatch(previewBanner(site, { name: "L", status: "complete" }, "123456"), /buy\.stripe\.com/);
 });
+
+test("league addresses: the name plus the ID's last six digits, so same-named leagues never share one", async () => {
+  const { slugFor } = await import("../src/pages.ts");
+  assert.equal(slugFor("Double Dipper", "1393873211271188480"), "double-dipper-188480");
+  assert.equal(slugFor("La Liga 🏈", "1381427556288323584"), "la-liga-323584");
+  assert.notEqual(slugFor("Dynasty League", "1111111111111111111"), slugFor("Dynasty League", "2222222222222222222"));
+  assert.equal(slugFor("🏈🏈", "1234567890123456"), "league-123456", "a name with nothing left after the emoji");
+  assert.equal(slugFor("Dynasty League", "1393873211271188480", true), "dynasty-league-1393873211271188480");
+  assert.match(slugFor("x".repeat(80), "1393873211271188480", true), /^[a-z0-9-]{1,64}$/, "always fits the page route");
+  assert.doesNotMatch(slugFor("2026", "1393873211271188480"), /^\d+$/, "never all digits, which would read as a raw league ID");
+});

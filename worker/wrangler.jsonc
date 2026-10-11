@@ -21,7 +21,7 @@
     "BRAND": "The Bench Press",
     "PRICE": "$25",
     "PAYMENT_LINK": "https://buy.stripe.com/fZu3cv50j10E2hZ3oA1sQ01", // live; the test-mode link is test_fZu3cv50j10E2hZ3oA1sQ01
-    "EXAMPLE": "double-dipper",
+    "EXAMPLE": "double-dipper-188480",
     "ORIGIN": "https://thebenchpress.app"
   }
 }
