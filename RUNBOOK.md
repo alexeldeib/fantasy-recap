@@ -129,6 +129,7 @@ Every post we write is kept for good. What it was made from is not: in season it
 | What | Kept for |
 |---|---|
 | A league's posts and its row | For good. A takedown deletes them. The terms say posts stay up after the season ends. |
+| Each recap's Sleeper inputs (R2, once the archive is on) | For good. A takedown deletes them at the next daily tidy. |
 | Free previews | 14 days |
 | Unpaid leagues | 30 days, once their previews are gone |
 | Failed or skipped recaps | 30 days. A recap stuck pending is marked failed after 2 days. |
@@ -151,6 +152,27 @@ To see where storage stands:
 ```bash
 npx wrangler d1 execute fantasy-recap --remote --command "SELECT 'posts' AS what, COUNT(*) AS n, SUM(length(doc)) AS bytes FROM recaps UNION ALL SELECT 'cache', COUNT(*), SUM(length(value)) FROM cache UNION ALL SELECT 'leagues', COUNT(*), NULL FROM leagues"
 ```
+
+## The input archive
+
+Each recap's facts step saves everything it read from Sleeper to R2 (`recorder()` in `src/sleeper.ts`): league, users, rosters, every week's scores it used, transactions, the schedule, brackets, and the stats, projections and player details for this league's players. The file is the same shape as the test fixtures, so a post can be rebuilt exactly as it was, even after Sleeper's live data has moved on (team names, rosters, injury tags) or if Sleeper's API ever goes away. It's about 150 KB per recap and 12 MB per league per season: about 18 cents a month per 1,000 league-seasons on R2, with the first 10 GB free. Saving is best effort and never fails a recap.
+
+**Turning it on.** R2 has to be enabled on the Cloudflare account first (dashboard → R2 Object Storage). Then:
+
+```bash
+npx wrangler r2 bucket create fantasy-recap-inputs
+```
+
+Then uncomment the `r2_buckets` line in `wrangler.jsonc` and push.
+
+**Rebuilding a post from it.** Fetch the snapshot, then replay it through today's code, from `worker/`:
+
+```bash
+npx wrangler r2 object get fantasy-recap-inputs/<league id>/<week>/<weekly or day-YYYY-MM-DD>.json --remote --file inputs.json
+node -e 'import("./src/facts.ts").then(async ({ build }) => { const { replay } = await import("./test/replay.ts"); console.log(JSON.stringify(await build(replay(JSON.parse(require("fs").readFileSync("inputs.json", "utf8"))), Number(process.argv[1])), null, 1)) })' <week>
+```
+
+For a game day, use `buildDay` from `./src/live.ts` with the week and date. To put rebuilt facts into a post, update its `doc` in D1 (keep the `copy`), or `admin.ts redo` it to have Claude rewrite it too.
 
 ## Secrets
 

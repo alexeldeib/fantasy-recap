@@ -61,7 +61,7 @@ Every recap saves what its Claude calls cost: `SELECT kind, json_extract(doc, '$
 
 That's about $12.50 of Claude per league per season against the $25 pass, plus about $25 a season in shared news searches whatever the number of leagues. Cloudflare is the $5 a month Workers Paid plan.
 
-Every post we write stays for good; what it was made from doesn't. In season, Sleeper's data and the news expire within weeks, and once the regular season ends all of it goes, so a finished season costs only its posts: about 0.8 MB per paid league, measured. Posts are the only thing that grows: about 0.8 GB a season at 1,000 leagues, against D1's 10 GB. Past about 10,000 league-seasons, move older seasons' posts to R2. The [runbook](RUNBOOK.md#data-retention) lists everything.
+Every post we write stays for good, and once the input archive is on, so does everything Sleeper said for it (in R2: about 12 MB per league per season, cents a month; see the [runbook](RUNBOOK.md#the-input-archive)). The working copies in D1 don't stay. In season, Sleeper's data and the news expire within weeks, and once the regular season ends all of it goes, so a finished season costs only its posts: about 0.8 MB per paid league, measured. Posts are the only thing that grows: about 0.8 GB a season at 1,000 leagues, against D1's 10 GB. Past about 10,000 league-seasons, move older seasons' posts to R2. The [runbook](RUNBOOK.md#data-retention) lists everything.
 
 ## Sleeper API usage
 

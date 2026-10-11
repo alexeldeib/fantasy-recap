@@ -92,3 +92,25 @@ export function sleeper(leagueId: string, db?: D1Database): Source {
     players: () => players(db), brackets: () => Promise.all([get(`${base}/winners_bracket`, []), get(`${base}/losers_bracket`, [])]),
   };
 }
+
+/** A Source that remembers every answer it gives, and `snapshot()`: those answers as a fixture test/replay.ts can replay,
+ *  cut to the players this league rosters or played (the full list is about 1 MB). Archived for good in R2 (INPUTS), so a
+ *  post can be rebuilt exactly as it was, even after Sleeper's live data has moved on. */
+export function recorder(sl: Source): { source: Source; snapshot: () => J } {
+  const data: J = {};
+  const source = Object.fromEntries(Object.entries(sl).map(([k, f]) => [k, async (...a: J[]) =>
+    (data[`${k}:${a.filter((x) => x !== undefined && typeof x !== "object").join(":")}`] = await (f as (...a: J[]) => Promise<J>)(...a))])) as unknown as Source;
+  const snapshot = () => {
+    const ids = new Set<string>();
+    for (const r of data["rosters:"] ?? []) for (const p of [...(r.players ?? []), ...(r.reserve ?? []), ...(r.taxi ?? [])]) ids.add(p);
+    for (const [k, ms] of Object.entries<J>(data)) if (k.startsWith("matchups:")) for (const m of ms ?? []) for (const p of m.players ?? []) ids.add(p);
+    const out: J = { ...data };
+    if (out["players:"]) out["players:"] = Object.fromEntries([...ids].filter((p) => out["players:"][p]).map((p) => [p, out["players:"][p]]));
+    for (const [k, v] of Object.entries<J>(out)) {
+      if (k.startsWith("stats:")) out[k] = Object.fromEntries(Object.entries<J>(v ?? {}).filter(([p]) => ids.has(p)));
+      if (k.startsWith("projections:")) out[k] = (v ?? []).filter((x: J) => ids.has(x.player_id));
+    }
+    return out;
+  };
+  return { source, snapshot };
+}

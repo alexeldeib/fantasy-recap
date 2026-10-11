@@ -111,6 +111,8 @@ try {
   } else if (command === "takedown") {
     const lg = await find(arg);
     await ask(`Delete every page and post of ${lg.name} (/${lg.slug}), all seasons, for good?${lg.paid_via?.startsWith("cs_") ? " It's paid: refund it first if that's owed." : ""}`);
+    // Each season's archived Sleeper inputs go too: the next daily tidy deletes them from R2 (it sweeps these markers).
+    sql(`INSERT OR IGNORE INTO cache (key, value) SELECT 'takedown:' || league_id, '' FROM leagues WHERE slug = ${q(lg.slug)}`);
     sql(`DELETE FROM recaps WHERE league_id IN (SELECT league_id FROM leagues WHERE slug = ${q(lg.slug)})`);
     sql(`DELETE FROM leagues WHERE slug = ${q(lg.slug)}`);
     console.log(`deleted /${lg.slug}. Anyone with its Sleeper league ID can still open a fresh free preview.`);

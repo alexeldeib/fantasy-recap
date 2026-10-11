@@ -17,6 +17,9 @@
   "workflows": [{ "name": "recap", "binding": "RECAP", "class_name": "RecapWorkflow",
                   "default_retention": { "success_retention": "3 days", "error_retention": "3 days" } }],
   "triggers": { "crons": ["*/15 * * * *"] },
+  // Every recap's Sleeper inputs, archived for good (RUNBOOK.md, The input archive). Off until R2 is enabled on the account
+  // and the bucket exists (npx wrangler r2 bucket create fantasy-recap-inputs); then uncomment.
+  // "r2_buckets": [{ "binding": "INPUTS", "bucket_name": "fantasy-recap-inputs" }],
   "vars": {
     "BRAND": "The Bench Press",
     "PRICE": "$25",

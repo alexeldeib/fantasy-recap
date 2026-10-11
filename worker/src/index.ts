@@ -7,13 +7,13 @@ import GAMEDAY from "./prompts/gameday.md";
 import PUNCHUP from "./prompts/punchup.md";
 import WRITER from "./prompts/writer.md";
 import { editor } from "./editor.ts";
-import { build, type J, pairs, type Source } from "./facts.ts";
+import { build, type J, pairs } from "./facts.ts";
 import { buildDay, weekday, worthPosting } from "./live.ts";
 import { csp, dayPage, dayTail, feedPage, feedStrip, finish, fine, html, landing, messagePage, paidPage, type Post, previewBanner, type Site,
   slugFor, termsPage, waitingPage } from "./pages.ts";
 import { displayName, page } from "./render.ts";
 import { type Due, due, scheduleAge } from "./schedule.ts";
-import { API, get, kept, nflSchedule, players, sleeper } from "./sleeper.ts";
+import { API, get, kept, nflSchedule, players, recorder, sleeper } from "./sleeper.ts";
 import { paidLeague, verify } from "./stripe.ts";
 import { ask, askLater, fillBrief, GAMEDAY_SCHEMA, research, type Spend, templateCopy } from "./writer.ts";
 
@@ -22,6 +22,7 @@ interface Env {
   RECAP: Workflow<Job>;
   ANTHROPIC_API_KEY?: string; // secret; without it weekly recaps ship with plain labels and game-day updates are skipped
   STRIPE_WEBHOOK_SECRET?: string; // secret
+  INPUTS?: R2Bucket; // every recap's Sleeper inputs, archived for good (RUNBOOK.md, Data retention); off until it's bound
   BRAND: string;
   PRICE: string;
   PAYMENT_LINK: string; // a Stripe Payment Link; the league ID rides along as client_reference_id
@@ -61,9 +62,13 @@ export class RecapWorkflow extends WorkflowEntrypoint<Env, Job> {
         if (!pairs(now).length) return null; // no games this week: a bye, or the league's season is over
         // This week's scores from the check above, and settled weeks (two or more back, after Sleeper's stat corrections)
         // kept in D1 for the season, so a week-17 recap doesn't ask Sleeper for all 17 weeks again.
-        const src: Source = { ...sl, matchups: (w, fallback) => (w === week ? Promise.resolve(now)
-          : w <= week - 2 ? kept(db, `matchups:${league_id}:${w}`, 365 * 24 * 3600e3, () => sl.matchups(w, fallback)) : sl.matchups(w, fallback)) };
-        return day ? buildDay(src, week, day) : build(src, week);
+        const rec = recorder({ ...sl, matchups: (w, fallback) => (w === week ? Promise.resolve(now)
+          : w <= week - 2 ? kept(db, `matchups:${league_id}:${w}`, 365 * 24 * 3600e3, () => sl.matchups(w, fallback)) : sl.matchups(w, fallback)) });
+        const facts = await (day ? buildDay(rec.source, week, day) : build(rec.source, week));
+        // Everything Sleeper said for this post, archived so it can be rebuilt as it was. Best effort: never fails a recap.
+        await this.env.INPUTS?.put(`${league_id}/${week}/${kind}.json`, JSON.stringify(rec.snapshot()))
+          .catch((err) => console.error(`archiving inputs for ${league_id} ${kind} failed: ${err}`));
+        return facts;
       });
     } catch (err) {
       console.error(`facts failed for ${league_id} ${kind} week ${week}: ${err}`);
@@ -260,8 +265,21 @@ async function daily(env: Env, season: string, inSeason: boolean) {
   const row = await env.DB.prepare("SELECT updated_at FROM cache WHERE key = 'players'").first<{ updated_at: string }>();
   if (row && Date.now() - Date.parse(`${row.updated_at.replace(" ", "T")}Z`) < 20 * 3600e3) return;
   await tidy(env.DB, season, inSeason); // first: it needs nothing from Sleeper, so an outage can't hold it up
+  await sweep(env);
   await players(env.DB, true);
   await renewComps(env, season);
+}
+
+/** A taken-down league's archived inputs (admin.ts takedown leaves a 'takedown:<league id>' row for each of its seasons). */
+async function sweep(env: Env) {
+  if (!env.INPUTS) return;
+  for (const { key } of (await env.DB.prepare("SELECT key FROM cache WHERE key LIKE 'takedown:%'").all<{ key: string }>()).results) {
+    const prefix = `${key.slice("takedown:".length)}/`;
+    for (let page = await env.INPUTS.list({ prefix }); page.objects.length; page = await env.INPUTS.list({ prefix })) {
+      await env.INPUTS.delete(page.objects.map((o) => o.key));
+    }
+    await env.DB.prepare("DELETE FROM cache WHERE key = ?").bind(key).run();
+  }
 }
 
 /** Once a day: drop what visitors, failures and finished seasons leave behind. Every post we've written stays for good; what

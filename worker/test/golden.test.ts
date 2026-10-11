@@ -46,3 +46,17 @@ test("stats and projections trimmed for D1 build exactly the same facts", async 
   const live = replay("sleeper-live-week4.json").data;
   assert.deepEqual(plain(await buildDay(replay(trim(live)), 4, "2026-10-04")), plain(await buildDay(replay(live), 4, "2026-10-04")), "a game day");
 });
+
+test("a recap's archived Sleeper inputs rebuild exactly the same facts", async () => {
+  const { recorder } = await import("../src/sleeper.ts");
+  for (const [name, run] of [
+    ["dd-week4.json", (s: any) => build(s, 4)],
+    ["sleeper-live-week4.json", (s: any) => buildDay(s, 4, "2026-10-04")],
+  ] as const) {
+    const rec = recorder(replay(name));
+    const facts = plain(await run(rec.source));
+    const snap = rec.snapshot();
+    assert.deepEqual(plain(await run(replay(JSON.parse(JSON.stringify(snap))))), facts, name);
+    assert.ok(Object.keys(snap["players:"]).length < Object.keys(replay(name).data["players:"]).length + 1, "only this league's players");
+  }
+});
