@@ -14,7 +14,16 @@ node scripts/admin.ts list
 
 **A league's page:** paste its Sleeper link into the box on thebenchpress.app, or open `thebenchpress.app/<Sleeper league ID>`. Either redirects to its address, which is its name plus the last six digits of its Sleeper ID.
 
-**Customers** see their private editor link once, on the "You're in" page Stripe sends them to after checkout. It's their login, so there's no self-serve recovery. If they lose it, they email support. Look it up with `node scripts/admin.ts link <league>`, which takes their Sleeper link or page URL, and send it back. If you think it leaked, rotate it first (see "A leaked editor link" below).
+**Customers** see their private editor link once, on the "You're in" page Stripe sends them to after checkout. If they lose it, they email links@thebenchpress.app from the address they paid with, and it comes right back on its own (next section). If that doesn't work for them, look it up with `node scripts/admin.ts link <league>`, which takes their Sleeper link or page URL, and send it yourself. If you think it leaked, rotate it first (see "A leaked editor link" below).
+
+## links@: lost editor links
+
+Email sent to links@thebenchpress.app goes to the Worker's `email` handler (Email Routing rule: links@ → Worker). The handler takes a fingerprint of the sender's address and looks for leagues whose checkout email has the same fingerprint. It replies with each matching league's page and editor link, or with a pointer to support@ when nothing matches.
+
+- **Why it's safe.** Cloudflare only lets the Worker reply to the actual sender, and only when the email passes DMARC, meaning the sender really controls that address. A forged sender gets nothing, and a reply can only ever reach the address on file. We store a fingerprint of the checkout email (`leagues.email_hash`), never the address itself.
+- **Comped leagues** have no checkout email. To let a commissioner use links@ anyway, run `node scripts/admin.ts email <league> <their address>`.
+- **Rate limit.** Each address gets one reply every 10 minutes. Automatic mail (out-of-office replies, bounces, mailing lists) gets none, so two robots can't trade emails forever. Someone who hits the limit just waits; `admin.ts link` has no limit. To clear it: `npx wrangler d1 execute fantasy-recap --remote --command "DELETE FROM cache WHERE key LIKE 'mailed:%'"`.
+- **No reply arrived?** Ask them to check spam. Mail that fails DMARC, which some company forwarders cause, gets no reply; `npx wrangler tail fantasy-recap` shows a "links@: couldn't reply" line for it. In either case, send the link yourself with `admin.ts link`.
 
 ## Support inbox
 

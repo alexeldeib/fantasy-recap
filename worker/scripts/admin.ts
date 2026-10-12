@@ -2,6 +2,7 @@
 // <league> is anything that names it: one of its thebenchpress.app page URLs, its Sleeper link or league ID, or its slug.
 // It uses your own logins: wrangler (D1, Workflows) and, for refunds, the Stripe CLI. The app holds no Stripe keys.
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createInterface } from "node:readline";
 
 const USAGE = `node scripts/admin.ts <command> <league>
@@ -12,6 +13,8 @@ const USAGE = `node scripts/admin.ts <command> <league>
   refund <cs_...>    Refund one checkout that /health flagged (it couldn't turn a league on). Asks first.
   list               Every active league: its page and its private editor link.
   link <league>      Print its private editor link, for fixing any line by hand.
+  email <league> <address>
+                     Let links@ send this league's links to that address (for comps: buyers' checkout emails already count).
   redo <page URL>    Rewrite one post now (a Claude call or three). The old post stays up until the new one lands.
                      Or: redo <league> <week> [weekly | day-YYYY-MM-DD]. Asks first.
   takedown <league>  Delete its pages and posts, every season, for good. Asks first.`;
@@ -101,6 +104,12 @@ try {
     for (const lg of sql("SELECT league_id, slug, name, season, paid_via, edit_key FROM leagues WHERE paid_via IS NOT NULL ORDER BY season DESC, slug") as League[]) {
       console.log(`${lg.name} (${lg.season}, ${lg.paid_via!.startsWith("cs_") ? "paid" : lg.paid_via})\n  ${home(lg)}\n  ${editor(lg)}`);
     }
+  } else if (command === "email") {
+    const lg = await find(arg), to = rest[0] ?? "";
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) throw new Error(USAGE);
+    const hash = createHash("sha256").update(to.trim().toLowerCase()).digest("hex"); // as src/mail.ts fingerprint(): never the address itself
+    sql(`UPDATE leagues SET email_hash = ${q(hash)} WHERE league_id = ${q(lg.league_id)}`);
+    console.log(`${lg.slug}: email links@${new URL(ORIGIN).hostname} from ${to} to get its links`);
   } else if (command === "link") {
     console.log(editor(await find(arg)));
   } else if (command === "redo") {

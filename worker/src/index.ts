@@ -1,6 +1,7 @@
 // The hosted version: every league's pages at /<slug>, a cron that decides what's due, a Workflow that writes each
 // recap (with retries), and a Stripe webhook that turns a league on. Leagues and recaps live in D1.
 import Anthropic from "@anthropic-ai/sdk";
+import { EmailMessage } from "cloudflare:email";
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import SHELL from "./page.html";
 import GAMEDAY from "./prompts/gameday.md";
@@ -9,6 +10,7 @@ import WRITER from "./prompts/writer.md";
 import { editor } from "./editor.ts";
 import { build, type J, pairs } from "./facts.ts";
 import { buildDay, weekday, worthPosting } from "./live.ts";
+import { address, automatic, fingerprint, replyBody, replyMime } from "./mail.ts";
 import { csp, dayPage, dayTail, feedPage, feedStrip, finish, fine, html, landing, messagePage, paidPage, type Post, previewBanner, type Site,
   slugFor, termsPage, waitingPage } from "./pages.ts";
 import { displayName, page } from "./render.ts";
@@ -32,6 +34,7 @@ interface Env {
 interface Job { league_id: string; season: string; week: number; kind: string; delay?: number } // delay: seconds before it starts
 interface League {
   league_id: string; slug: string; name: string; season: string; paid_via: string | null; intro: string; lore: string; edit_key: string | null;
+  email_hash: string | null;
 }
 
 const LLM = { retries: { limit: 3, delay: "2 minutes", backoff: "exponential" }, timeout: "20 minutes" } as const; // rides out ~15 minutes of API trouble
@@ -213,7 +216,7 @@ async function enqueue(env: Env, season: string, jobs: Due[], only?: string): Pr
 /** Turn a league on: Stripe says it's paid. The first recap is the latest finished week, written now. A payment that can't
  *  turn anything on (no league named, not a football league, a league that's already on) is flagged for a refund instead:
  *  /health reports it, and /paid tells the buyer. */
-async function activate(env: Env, leagueId: string | null, session: string) {
+async function activate(env: Env, leagueId: string | null, session: string, email: string | null = null) {
   const refund = async (why: string) => {
     console.error(`refund checkout ${session}: ${why}`);
     await env.DB.prepare("INSERT OR IGNORE INTO cache (key, value) VALUES (?, ?)").bind(`refund:${session}`, why).run();
@@ -223,8 +226,9 @@ async function activate(env: Env, leagueId: string | null, session: string) {
   const on = await env.DB.prepare("UPDATE leagues SET paid_via = ? WHERE league_id = ? AND (paid_via IS NULL OR paid_via IN ('showcase', ?))")
     .bind(session, leagueId, session).run(); // (the same session again is Stripe redelivering)
   if (!on.meta.changes) return refund(`${row.slug} was already on (${row.paid_via})`);
-  // the editor key is the commissioner's login; /paid shows it
-  await env.DB.prepare("UPDATE leagues SET edit_key = COALESCE(edit_key, ?) WHERE league_id = ?").bind(crypto.randomUUID().replaceAll("-", ""), leagueId).run();
+  // The editor key is the commissioner's login; /paid shows it, and links@ sends it to the email they paid with.
+  await env.DB.prepare("UPDATE leagues SET edit_key = COALESCE(edit_key, ?), email_hash = COALESCE(?, email_hash) WHERE league_id = ?")
+    .bind(crypto.randomUUID().replaceAll("-", ""), email ? await fingerprint(email) : null, leagueId).run();
   const week = Number((await get(`${API}/league/${leagueId}`)).settings.last_scored_leg || 0);
   if (week) await enqueue(env, row.season, [{ week, kind: "weekly" }], leagueId);
 }
@@ -241,9 +245,9 @@ async function findOrAdd(env: Env, id: string): Promise<League | null> {
     ? await env.DB.prepare("SELECT * FROM leagues WHERE league_id = ?").bind(lg.previous_league_id).first<League>() : null;
   let slug = prev?.slug ?? slugFor(lg.name, id);
   if (!prev && await env.DB.prepare("SELECT 1 FROM leagues WHERE slug = ? LIMIT 1").bind(slug).first()) slug = slugFor(lg.name, id, true);
-  await env.DB.prepare(`INSERT OR IGNORE INTO leagues (league_id, slug, name, season, previous_league_id, paid_via, intro, lore, edit_key)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(id, slug, lg.name, String(lg.season), lg.previous_league_id ?? null,
-    prev?.paid_via === "comp" ? "comp" : null, prev?.intro ?? "", prev?.lore ?? "[]", prev?.edit_key ?? null).run();
+  await env.DB.prepare(`INSERT OR IGNORE INTO leagues (league_id, slug, name, season, previous_league_id, paid_via, intro, lore, edit_key, email_hash)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(id, slug, lg.name, String(lg.season), lg.previous_league_id ?? null,
+    prev?.paid_via === "comp" ? "comp" : null, prev?.intro ?? "", prev?.lore ?? "[]", prev?.edit_key ?? null, prev?.email_hash ?? null).run();
   return find();
 }
 
@@ -294,6 +298,7 @@ async function tidy(db: D1Database, season: string, inSeason: boolean) {
     db.prepare("UPDATE recaps SET status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE status = 'pending' AND updated_at < datetime('now', '-2 days')"),
     db.prepare("DELETE FROM recaps WHERE status IN ('failed', 'skipped') AND updated_at < datetime('now', '-30 days')"),
     db.prepare("DELETE FROM leagues WHERE paid_via IS NULL AND created_at < datetime('now', '-30 days') AND league_id NOT IN (SELECT league_id FROM recaps)"),
+    db.prepare("DELETE FROM cache WHERE key LIKE 'mailed:%' AND updated_at < datetime('now', '-1 day')"), // links@'s rate limit
     ...(inSeason ? [
       db.prepare("DELETE FROM cache WHERE key LIKE 'news:%' AND updated_at < datetime('now', '-21 days')"),
       db.prepare("DELETE FROM cache WHERE (key LIKE 'stats:%' OR key LIKE 'projections:%') AND updated_at < datetime('now', '-14 days')"),
@@ -364,6 +369,23 @@ export default {
     if (res.headers.get("content-type")?.startsWith("text/html")) res.headers.set("content-security-policy", await csp(SHELL));
     return res;
   },
+  // links@: email in, a league's links out (src/mail.ts says why that's safe). Only links@ routes here (Email Routing).
+  async email(message: ForwardableEmailMessage, env: Env) {
+    if (!message.to.toLowerCase().startsWith("links@") || automatic(message.headers)) return; // robots get no answer
+    const hash = await fingerprint(address(message.headers.get("from") ?? message.from));
+    // One reply per address every 10 minutes, as a loop brake. Someone limited just waits; admin.ts link always works.
+    const sent = await env.DB.prepare(`INSERT INTO cache (key, value) VALUES (?, '') ON CONFLICT (key) DO UPDATE
+        SET updated_at = CURRENT_TIMESTAMP WHERE updated_at < datetime('now', '-10 minutes')`).bind(`mailed:${hash}`).run();
+    if (!sent.meta.changes) return console.warn(`links@: ${hash.slice(0, 8)} asked again within 10 minutes`);
+    const leagues = (await env.DB.prepare("SELECT slug, name, season, edit_key FROM leagues WHERE email_hash = ? AND edit_key IS NOT NULL ORDER BY season DESC")
+      .bind(hash).all<{ slug: string; name: string; season: string; edit_key: string }>()).results;
+    try {
+      await message.reply(new EmailMessage(message.to, message.from, replyMime(message.to, message.from, message.headers.get("message-id"), replyBody(env.ORIGIN, leagues))));
+    } catch (err) {
+      console.error(`links@: couldn't reply (${err})`); // Cloudflare refuses replies to mail that fails DMARC
+    }
+  },
+
   // Every 15 minutes: the daily chores (year-round), then whatever's due for every active league.
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
     const state = await kept(env.DB, "state", 24 * 3600e3, () => get(`${API}/state/nfl`)), season = String(state.season); // a day old is fine
@@ -386,7 +408,7 @@ async function route(req: Request, env: Env): Promise<Response> {
       const event = await verify(await req.text(), req.headers.get("stripe-signature"), env.STRIPE_WEBHOOK_SECRET ?? "");
       if (!event) return new Response("bad signature", { status: 400 });
       const paid = paidLeague(event);
-      if (paid) await activate(env, paid.leagueId, paid.session); // a throw here returns 500, and Stripe retries
+      if (paid) await activate(env, paid.leagueId, paid.session, paid.email); // a throw here returns 500, and Stripe retries
       return new Response("ok");
     }
     const m = path.match(/^\/([a-z0-9-]{1,64})(?:\/(feed|edit)|\/(\d{4})\/(\d{1,2}))?\/?$/);

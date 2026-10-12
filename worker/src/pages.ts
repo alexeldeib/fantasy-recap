@@ -329,7 +329,8 @@ export function paidPage(shell: string, site: Site, lg: { slug: string; name: st
   return messagePage(shell, site, "You're in", `${displayName(lg.name)} is on. The recap lands every Tuesday morning, with quick hits after every game day.`,
     `<p><a class="btn" href="${e(home)}">See your league</a></p><p class="dek">Share <b>${e(home)}</b> in the group chat.</p>`
     + `<p class="dek">Your private editor link, for fixing any line or adding league lore: <a href="${e(edit)}">${e(edit)}</a>. `
-    + `Bookmark it and keep it to yourself: anyone with it can edit your league's pages.</p>`);
+    + `Bookmark it and keep it to yourself: anyone with it can edit your league's pages. Lose it, and email `
+    + `<b>links@${e(new URL(site.origin).hostname)}</b> from the address you paid with: it comes right back.</p>`);
 }
 
 /** /terms: what a season pass is, refunds, privacy and contact, in plain words. */
@@ -341,11 +342,12 @@ export function termsPage(shell: string, site: Site): string {
     + sec("buy-h", "What you get", "One league, one season", [`A season pass turns on ${e(site.brand)} for one Sleeper league for one NFL season: a recap every Tuesday morning and a quick update after every NFL game day, through the end of that league's season, at one link anyone in the league can open. Posts stay up after the season ends. It's a one-time payment, not a subscription. When Sleeper renews your league next season, that season needs its own pass.`])
     + sec("refund-h", "Refunds", "No hard feelings", [`Not what you hoped for? Email ${link} within 7 days of buying for a full refund, no questions asked.`,
       "If a problem on our end stops your league's recaps during the season and we can't fix it, we'll refund the pass in full."])
-    + sec("priv-h", "Privacy", "What we keep", ["We use your league's public Sleeper data (team names, usernames, avatars, rosters and scores) to make its pages, which anyone with the link can read. Stripe handles payments; we never see your card.",
+    + sec("priv-h", "Privacy", "What we keep", ["We use your league's public Sleeper data (team names, usernames, avatars, rosters and scores) to make its pages, which anyone with the link can read. Stripe handles payments; we never see your card. We keep a fingerprint of the email you paid with, not the address itself, so we can send your editor link back when you ask.",
       `No accounts, no ads, no tracking cookies. To take your league's pages down, email ${link}.`])
     + sec("fine-h", "The fine print", "Read it once", ["The recaps are written by AI (Claude) from real stats, for laughs. They can get things wrong, and they roast lineup decisions. The commissioner can edit any line.",
       `${e(site.brand)} isn't affiliated with Sleeper or the NFL. If these terms change, this page has the current version.`])
-    + sec("help-h", "Contact", "A real person answers", [`Questions, refunds, a recap that needs fixing: ${link}.`])
+    + sec("help-h", "Contact", "A real person answers", [`Questions, refunds, a recap that needs fixing: ${link}.`,
+      `Lost your editor link? Email <a href="mailto:links@${new URL(site.origin).hostname}">links@${new URL(site.origin).hostname}</a> from the address you paid with, and it comes right back.`])
     + "</main>" + foot(site.brand, "", site);
   return finish(fill(shell, { title: e(`Terms · ${site.brand}`), description: e(`What a ${site.brand} season pass covers, refunds and privacy.`),
     image: "", image_alt: "", url: e(`${site.origin}/terms`), brand: e(site.brand), body }));

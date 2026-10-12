@@ -19,16 +19,16 @@ test("webhook: a signed, fresh, paid checkout activates its league; anything els
   const event = { type: "checkout.session.completed", data: { object: { id: "cs_test_1", payment_status: "paid", client_reference_id: "1393873211271188480" } } };
   const body = JSON.stringify(event);
   const ok = await verify(body, await sign(body, now), SECRET, now);
-  assert.deepEqual(paidLeague(ok), { leagueId: "1393873211271188480", session: "cs_test_1" });
+  assert.deepEqual(paidLeague(ok), { leagueId: "1393873211271188480", session: "cs_test_1", email: null });
   assert.equal(await verify(body + " ", await sign(body, now), SECRET, now), null, "tampered body");
   assert.equal(await verify(body, await sign(body, now, "whsec_wrong"), SECRET, now), null, "wrong secret");
   assert.equal(await verify(body, await sign(body, now - 600), SECRET, now), null, "replayed after 10 minutes");
   assert.equal(await verify(body, null, SECRET, now), null, "unsigned");
   assert.equal(paidLeague({ ...event, data: { object: { ...event.data.object, payment_status: "unpaid" } } }), null);
   assert.deepEqual(paidLeague({ ...event, data: { object: { ...event.data.object, payment_status: "no_payment_required" } } }),
-    { leagueId: "1393873211271188480", session: "cs_test_1" }, "a 100%-off promotion code");
+    { leagueId: "1393873211271188480", session: "cs_test_1", email: null }, "a 100%-off promotion code");
   assert.deepEqual(paidLeague({ ...event, data: { object: { ...event.data.object, client_reference_id: "x; drop table" } } }),
-    { leagueId: null, session: "cs_test_1" }, "no league to turn on: flagged for a refund, never injected");
+    { leagueId: null, session: "cs_test_1", email: null }, "no league to turn on: flagged for a refund, never injected");
   assert.equal(paidLeague({ type: "charge.refunded" }), null);
 });
 
@@ -63,9 +63,10 @@ test("editor: a form changes only lines the copy already has", () => {
 
 test("webhook: a paid checkout that names no league still comes back, so it can be flagged for a refund", () => {
   const s = { id: "cs_live_9", payment_status: "paid" };
-  assert.deepEqual(paidLeague({ type: "checkout.session.completed", data: { object: s } }), { leagueId: null, session: "cs_live_9" });
+  assert.deepEqual(paidLeague({ type: "checkout.session.completed", data: { object: { ...s, customer_details: { email: "pat@example.com" } } } }),
+    { leagueId: null, session: "cs_live_9", email: "pat@example.com" }, "the buyer's email comes along");
   assert.deepEqual(paidLeague({ type: "checkout.session.completed", data: { object: { ...s, client_reference_id: "x; drop table" } } }),
-    { leagueId: null, session: "cs_live_9" });
+    { leagueId: null, session: "cs_live_9", email: null });
   assert.equal(paidLeague({ type: "checkout.session.completed", data: { object: { ...s, payment_status: "unpaid" } } }), null);
 });
 
@@ -118,4 +119,23 @@ test("cron: the schedule is refreshed when a game night ends, hourly for a late 
   assert.equal(scheduleAge(sched("in_game"), sunday + 40 * H), H, "still not final (a delay, a postponement): hourly");
   assert.equal(scheduleAge(sched("complete", "in_game"), sunday + 52 * H), 10 * 60e3, "Monday night's game, Tuesday 4am UTC");
   assert.equal(scheduleAge(sched("in_game", "complete"), sunday + 80 * H), 24 * H, "after three days, daily again");
+});
+
+test("links@: fingerprints, senders, robots and the reply", async () => {
+  const { address, automatic, fingerprint, replyBody, replyMime } = await import("../src/mail.ts");
+  const { createHash } = await import("node:crypto");
+  assert.equal(await fingerprint(" Pat@Example.com "), await fingerprint("pat@example.com"), "case and spaces don't matter");
+  assert.equal(await fingerprint("pat@example.com"), createHash("sha256").update("pat@example.com").digest("hex"), "the same as admin.ts email's");
+  assert.equal(address("Pat Smith <Pat@Example.com>"), "pat@example.com");
+  assert.equal(address("pat@example.com"), "pat@example.com");
+  assert.equal(automatic(new Headers({ "auto-submitted": "auto-replied" })), true, "a vacation reply");
+  assert.equal(automatic(new Headers({ precedence: "bulk" })), true);
+  assert.equal(automatic(new Headers({ "auto-submitted": "no" })), false, "a person");
+  const mime = replyMime("links@thebenchpress.app", "pat@example.com", "<abc@mail>\r\nBcc: evil@example.com", "Hi\nthere");
+  assert.doesNotMatch(mime, /^Bcc:/m, "nothing from the incoming email can add a header");
+  assert.match(mime, /^In-Reply-To: <abc@mail> Bcc: evil@example.com\r$/m);
+  assert.match(mime, /^Auto-Submitted: auto-replied\r$/m);
+  assert.match(mime, /\r\n\r\nHi\r\nthere$/, "headers, a blank line, then the body");
+  assert.match(replyBody("https://thebenchpress.app", [{ slug: "x-123456", name: "X", season: "2026", edit_key: "k" }]), /x-123456\/edit\?key=k/);
+  assert.match(replyBody("https://thebenchpress.app", []), /couldn't find a season pass.*support@thebenchpress\.app/s);
 });

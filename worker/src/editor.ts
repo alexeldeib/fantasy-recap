@@ -61,7 +61,9 @@ export async function editor(req: Request, db: D1Database, site: Site, shell: st
   const key = param("key");
   const lg = key && await db.prepare("SELECT league_id, slug, name, season, intro, lore FROM leagues WHERE slug = ? AND edit_key = ? ORDER BY season DESC LIMIT 1")
     .bind(slug, key).first<J>();
-  if (!lg) return html(messagePage(shell, site, "Link not recognized", "That editor link doesn't match a league. Use the private link from your checkout page, or email support for a new one."), 404, 0, true);
+  if (!lg) {
+    return html(messagePage(shell, site, "Link not recognized", `That editor link doesn't match a league. Lost yours? Email links@${new URL(site.origin).hostname} from the address you paid with, and it comes right back.`), 404, 0, true);
+  }
   const home = `${site.origin}/${lg.slug}/`, self = `${home}edit?key=${encodeURIComponent(key)}`;
   const hidden = `<input type="hidden" name="key" value="${e(key)}">`;
   const post = param("post").match(/^(\d{1,2})\/(weekly|day-\d{4}-\d{2}-\d{2})$/);
