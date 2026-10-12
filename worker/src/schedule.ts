@@ -40,3 +40,11 @@ export function scheduleAge(schedule: J[], now: number): number {
   }
   return age;
 }
+
+/** The season whose pages can still change: the one that started most recently. A season starts in September (NFL week 1),
+ *  so last season stays open through the offseason (a final recap can still be fixed in February) and closes when the next
+ *  one starts. The editor and links@ only serve leagues of this season or later. */
+export function currentSeason(now = Date.now()): string {
+  const d = new Date(now);
+  return String(d.getUTCMonth() >= 8 ? d.getUTCFullYear() : d.getUTCFullYear() - 1);
+}

@@ -30,7 +30,7 @@ export function replyMime(from: string, to: string, inReplyTo: string | null, bo
 export function replyBody(site: string, leagues: { slug: string; name: string; season: string; edit_key: string }[]): string {
   const host = new URL(site).hostname;
   if (!leagues.length) {
-    return `We couldn't find a season pass bought with this address.\n\nWrite from the email you used at checkout, or reach a person at support@${host} with your league's link.\n\nThe Bench Press`;
+    return `We couldn't find a pass for this season bought with this address.\n\nWrite from the email you used at checkout, or reach a person at support@${host} with your league's link.\n\nThe Bench Press`;
   }
   return "Here are your links.\n\n" + leagues.map((l) => `${l.name} (${l.season})\n  League page: ${site}/${l.slug}/\n`
     + `  Your private editor link: ${site}/${l.slug}/edit?key=${l.edit_key}`).join("\n\n")

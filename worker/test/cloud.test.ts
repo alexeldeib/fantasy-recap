@@ -137,5 +137,13 @@ test("links@: fingerprints, senders, robots and the reply", async () => {
   assert.match(mime, /^Auto-Submitted: auto-replied\r$/m);
   assert.match(mime, /\r\n\r\nHi\r\nthere$/, "headers, a blank line, then the body");
   assert.match(replyBody("https://thebenchpress.app", [{ slug: "x-123456", name: "X", season: "2026", edit_key: "k" }]), /x-123456\/edit\?key=k/);
-  assert.match(replyBody("https://thebenchpress.app", []), /couldn't find a season pass.*support@thebenchpress\.app/s);
+  assert.match(replyBody("https://thebenchpress.app", []), /couldn't find a pass for this season.*support@thebenchpress\.app/s);
+});
+
+test("pages are editable through the offseason, and final once the next season starts in September", async () => {
+  const { currentSeason } = await import("../src/schedule.ts");
+  assert.equal(currentSeason(Date.parse("2026-10-12T00:00:00Z")), "2026", "in season");
+  assert.equal(currentSeason(Date.parse("2027-02-14T00:00:00Z")), "2026", "the offseason: last season can still be fixed");
+  assert.equal(currentSeason(Date.parse("2027-08-31T23:59:59Z")), "2026");
+  assert.equal(currentSeason(Date.parse("2027-09-01T00:00:00Z")), "2027", "week 1's month: 2026 is final");
 });

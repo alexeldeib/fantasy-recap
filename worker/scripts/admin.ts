@@ -3,6 +3,7 @@
 // It uses your own logins: wrangler (D1, Workflows) and, for refunds, the Stripe CLI. The app holds no Stripe keys.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { currentSeason } from "../src/schedule.ts";
 import { createInterface } from "node:readline";
 
 const USAGE = `node scripts/admin.ts <command> <league>
@@ -11,7 +12,7 @@ const USAGE = `node scripts/admin.ts <command> <league>
   off <league>       Turn it off: no more recaps, and its page goes back to the free preview.
   refund <league>    Refund its Stripe payment in full, then turn it off. Asks first.
   refund <cs_...>    Refund one checkout that /health flagged (it couldn't turn a league on). Asks first.
-  list               Every active league: its page and its private editor link.
+  list               This season's active leagues: each one's page and private editor link.
   link <league>      Print its private editor link, for fixing any line by hand.
   email <league> <address>
                      Let links@ send this league's links to that address (for comps: buyers' checkout emails already count).
@@ -101,7 +102,8 @@ try {
       console.log(`${lg.slug} is off.`);
     }
   } else if (command === "list") {
-    for (const lg of sql("SELECT league_id, slug, name, season, paid_via, edit_key FROM leagues WHERE paid_via IS NOT NULL ORDER BY season DESC, slug") as League[]) {
+    for (const lg of sql(`SELECT league_id, slug, name, season, paid_via, edit_key FROM leagues WHERE paid_via IS NOT NULL AND paid_via != 'showcase'
+        AND season >= ${q(currentSeason())} ORDER BY season DESC, slug`) as League[]) {
       console.log(`${lg.name} (${lg.season}, ${lg.paid_via!.startsWith("cs_") ? "paid" : lg.paid_via})\n  ${home(lg)}\n  ${editor(lg)}`);
     }
   } else if (command === "email") {

@@ -14,7 +14,7 @@ import { address, automatic, fingerprint, replyBody, replyMime } from "./mail.ts
 import { csp, dayPage, dayTail, feedPage, feedStrip, finish, fine, html, landing, messagePage, paidPage, type Post, previewBanner, type Site,
   slugFor, termsPage, waitingPage } from "./pages.ts";
 import { displayName, page } from "./render.ts";
-import { type Due, due, scheduleAge } from "./schedule.ts";
+import { currentSeason, type Due, due, scheduleAge } from "./schedule.ts";
 import { API, get, kept, nflSchedule, players, recorder, sleeper } from "./sleeper.ts";
 import { paidLeague, verify } from "./stripe.ts";
 import { ask, askLater, fillBrief, GAMEDAY_SCHEMA, research, type Spend, templateCopy } from "./writer.ts";
@@ -377,8 +377,10 @@ export default {
     const sent = await env.DB.prepare(`INSERT INTO cache (key, value) VALUES (?, '') ON CONFLICT (key) DO UPDATE
         SET updated_at = CURRENT_TIMESTAMP WHERE updated_at < datetime('now', '-10 minutes')`).bind(`mailed:${hash}`).run();
     if (!sent.meta.changes) return console.warn(`links@: ${hash.slice(0, 8)} asked again within 10 minutes`);
-    const leagues = (await env.DB.prepare("SELECT slug, name, season, edit_key FROM leagues WHERE email_hash = ? AND edit_key IS NOT NULL ORDER BY season DESC")
-      .bind(hash).all<{ slug: string; name: string; season: string; edit_key: string }>()).results;
+    // Leagues that are on, this season (the editor serves no others): one row each, even for a league renewed with this address.
+    const leagues = (await env.DB.prepare(`SELECT slug, name, season, edit_key FROM leagues WHERE email_hash = ? AND edit_key IS NOT NULL
+        AND paid_via IS NOT NULL AND paid_via != 'showcase' AND season >= ? ORDER BY season DESC`)
+      .bind(hash, currentSeason()).all<{ slug: string; name: string; season: string; edit_key: string }>()).results;
     try {
       await message.reply(new EmailMessage(message.to, message.from, replyMime(message.to, message.from, message.headers.get("message-id"), replyBody(env.ORIGIN, leagues))));
     } catch (err) {

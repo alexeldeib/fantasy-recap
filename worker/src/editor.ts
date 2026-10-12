@@ -5,6 +5,7 @@ import type { J } from "./facts.ts";
 import { foot, finish, html, mast, messagePage, type Post, postDay, postUrl, type Site } from "./pages.ts";
 import { esc as e, first, words } from "./py.ts";
 import { displayName, fill } from "./render.ts";
+import { currentSeason } from "./schedule.ts";
 
 const MAX = 2000; // characters per field
 const TEXT: Record<string, string> = { headline: "Headline", dek: "Dek, the line under the headline", hero_value: "The number",
@@ -59,10 +60,14 @@ export async function editor(req: Request, db: D1Database, site: Site, shell: st
   const url = new URL(req.url), form = req.method === "POST" ? await req.formData() : null;
   const param = (k: string) => String(form?.get(k) ?? url.searchParams.get(k) ?? "");
   const key = param("key");
-  const lg = key && await db.prepare("SELECT league_id, slug, name, season, intro, lore FROM leagues WHERE slug = ? AND edit_key = ? ORDER BY season DESC LIMIT 1")
+  const lg = key && await db.prepare("SELECT league_id, slug, name, season, intro, lore, paid_via FROM leagues WHERE slug = ? AND edit_key = ? ORDER BY season DESC LIMIT 1")
     .bind(slug, key).first<J>();
   if (!lg) {
     return html(messagePage(shell, site, "Link not recognized", `That editor link doesn't match a league. Lost yours? Email links@${new URL(site.origin).hostname} from the address you paid with, and it comes right back.`), 404, 0, true);
+  }
+  // Only a league that's on, this season: once it's turned off or the next season starts, its pages are final.
+  if (!lg.paid_via || lg.paid_via === "showcase" || lg.season < currentSeason()) {
+    return html(messagePage(shell, site, "These pages are final", `${displayName(lg.name)}'s ${lg.season} pages stay up as they are: editing closes when a league is turned off or the next season starts. Next season's league gets its own editor link.`), 403, 0, true);
   }
   const home = `${site.origin}/${lg.slug}/`, self = `${home}edit?key=${encodeURIComponent(key)}`;
   const hidden = `<input type="hidden" name="key" value="${e(key)}">`;

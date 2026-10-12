@@ -16,6 +16,8 @@ node scripts/admin.ts list
 
 **Customers** see their private editor link once, on the "You're in" page Stripe sends them to after checkout. If they lose it, they email links@thebenchpress.app from the address they paid with, and it comes right back on its own (next section). If that doesn't work for them, look it up with `node scripts/admin.ts link <league>`, which takes their Sleeper link or page URL, and send it yourself. If you think it leaked, rotate it first (see "A leaked editor link" below).
 
+**Editing closes** when a league is turned off, or when the next season starts on September 1: last season stays editable through the offseason, then its pages are final (`currentSeason()` in `src/schedule.ts`). A final league's editor link shows "These pages are final", and links@ and `admin.ts list` only include leagues that are on, this season. To fix a final page anyway, edit its `doc` in D1, or `admin.ts redo` it.
+
 ## links@: lost editor links
 
 Email sent to links@thebenchpress.app goes to the Worker's `email` handler. The Email Routing rule is links@ → Worker; `npx wrangler email routing rules list thebenchpress.app` shows it next to support@ → Gmail. Replies are DKIM-signed and covered by the SPF record. A DMARC record (TXT `_dmarc` = `v=DMARC1; p=none`) is optional but helps them reach inboxes. The handler takes a fingerprint of the sender's address and looks for leagues whose checkout email has the same fingerprint. It replies with each matching league's page and editor link, or with a pointer to support@ when nothing matches.
