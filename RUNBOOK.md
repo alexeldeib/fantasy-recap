@@ -18,7 +18,7 @@ node scripts/admin.ts list
 
 ## links@: lost editor links
 
-Email sent to links@thebenchpress.app goes to the Worker's `email` handler (Email Routing rule: links@ → Worker). The handler takes a fingerprint of the sender's address and looks for leagues whose checkout email has the same fingerprint. It replies with each matching league's page and editor link, or with a pointer to support@ when nothing matches.
+Email sent to links@thebenchpress.app goes to the Worker's `email` handler. The Email Routing rule is links@ → Worker; `npx wrangler email routing rules list thebenchpress.app` shows it next to support@ → Gmail. Replies are DKIM-signed and covered by the SPF record. A DMARC record (TXT `_dmarc` = `v=DMARC1; p=none`) is optional but helps them reach inboxes. The handler takes a fingerprint of the sender's address and looks for leagues whose checkout email has the same fingerprint. It replies with each matching league's page and editor link, or with a pointer to support@ when nothing matches.
 
 - **Why it's safe.** Cloudflare only lets the Worker reply to the actual sender, and only when the email passes DMARC, meaning the sender really controls that address. A forged sender gets nothing, and a reply can only ever reach the address on file. We store a fingerprint of the checkout email (`leagues.email_hash`), never the address itself.
 - **Comped leagues** have no checkout email. To let a commissioner use links@ anyway, run `node scripts/admin.ts email <league> <their address>`.
