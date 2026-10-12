@@ -84,6 +84,7 @@ export class RecapWorkflow extends WorkflowEntrypoint<Env, Job> {
 
     if (day) { // a game-day quick hit: one pass, shared news
       const earlier = await step.do("earlier", () => copies(db, league_id, season, week, kind));
+      const usedHeadlines = await step.do("headlines", () => headlines(db, league_id, season, week, kind));
       const lastRecap = await step.do("last recap", async () => {
         const row = await db.prepare("SELECT doc FROM recaps WHERE league_id = ? AND season = ? AND week = ? AND kind = 'weekly' AND status = 'done'")
           .bind(league_id, season, week - 1).first<{ doc: string }>();
@@ -95,7 +96,7 @@ export class RecapWorkflow extends WorkflowEntrypoint<Env, Job> {
       const kindOf = [`${facts.teams.length}-team`, facts.scoring, "fantasy football league"].filter(Boolean).join(" ");
       const brief = fillBrief(GAMEDAY, facts, `You write the game-day updates for ${displayName(facts.league)}, a ${kindOf} of friends on Sleeper.`, lore);
       try {
-        const [copy, model, cost] = await step.do("write", LLM, () => ask(client, brief, { facts, earlier, last_recap: lastRecap, news }, GAMEDAY_SCHEMA, "medium"));
+        const [copy, model, cost] = await step.do("write", LLM, () => ask(client, brief, { facts, earlier, last_recap: lastRecap, news, used_headlines: usedHeadlines }, GAMEDAY_SCHEMA, "medium"));
         return save("done", { facts, copy: { ...copy, by: model, news }, cost: total([newsCost, cost]) });
       } catch (err) {
         console.error(`game-day copy failed for ${league_id} ${kind}: ${err}`);
@@ -105,6 +106,7 @@ export class RecapWorkflow extends WorkflowEntrypoint<Env, Job> {
 
     // The weekly recap: the week's shared news, a draft, a punch-up. Any failure falls back a step, so the numbers always ship.
     const earlier = await step.do("earlier", () => copies(db, league_id, season, week, "weekly"));
+    const usedHeadlines = await step.do("headlines", () => headlines(db, league_id, season, week, kind));
     const [news, newsCost] = await step.do("news", { timeout: "12 minutes" }, () => weekNews(db, client, season, week))
       .catch(() => [null, null] as [null, null]); // best effort
     const costs: (Spend | null)[] = [newsCost];
@@ -112,10 +114,10 @@ export class RecapWorkflow extends WorkflowEntrypoint<Env, Job> {
     let copy: J;
     try {
       // Batched: half price, and nothing waits on a connection for the minutes a high-effort draft takes.
-      const [draft, model, draftCost] = await askLater(step, client, "draft", brief, { facts, previous_weeks: earlier, news });
+      const [draft, model, draftCost] = await askLater(step, client, "draft", brief, { facts, previous_weeks: earlier, news, used_headlines: usedHeadlines });
       costs.push(draftCost);
       try {
-        const [final, m, punchCost] = await askLater(step, client, "punch-up", `${brief}\n\n---\n\n${PUNCHUP}`, { facts, previous_weeks: earlier, news, draft });
+        const [final, m, punchCost] = await askLater(step, client, "punch-up", `${brief}\n\n---\n\n${PUNCHUP}`, { facts, previous_weeks: earlier, news, used_headlines: usedHeadlines, draft });
         costs.push(punchCost);
         copy = { ...final, by: `${m} (draft + punch-up)`, news };
       } catch {
@@ -145,6 +147,14 @@ async function copies(db: D1Database, league: string, season: string, week: numb
     const { by: _by, news: _news, ...c } = JSON.parse(r.doc).copy;
     return { week: r.week, ...c };
   });
+}
+
+/** Every headline the league has already run this season, recaps and game-day updates alike (not the one being written),
+ *  so no writer repeats or riffs on one: each writer only sees its own kind of earlier copy. */
+async function headlines(db: D1Database, league: string, season: string, week: number, kind: string): Promise<string[]> {
+  const { results } = await db.prepare(`SELECT headline FROM recaps WHERE league_id = ? AND season = ? AND status = 'done' AND kind != 'preview'
+      AND headline IS NOT NULL AND NOT (week = ? AND kind = ?) ORDER BY week, kind`).bind(league, season, week, kind).all<{ headline: string }>();
+  return results.map((r) => r.headline);
 }
 
 const SEARCHING = "\u0000searching";
