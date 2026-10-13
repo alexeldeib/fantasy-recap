@@ -107,6 +107,14 @@ export class RecapWorkflow extends WorkflowEntrypoint<Env, Job> {
     // The weekly recap: the week's shared news, a draft, a punch-up. Any failure falls back a step, so the numbers always ship.
     const earlier = await step.do("earlier", () => copies(db, league_id, season, week, "weekly"));
     const usedHeadlines = await step.do("headlines", () => headlines(db, league_id, season, week, kind));
+    // A rewrite (admin redo) starts from the version it replaces, so what worked survives.
+    const take = await step.do("earlier take", async () => {
+      const row = await db.prepare("SELECT doc FROM recaps WHERE league_id = ? AND season = ? AND week = ? AND kind = 'weekly' AND status = 'done'")
+        .bind(league_id, season, week).first<{ doc: string }>();
+      if (!row) return null;
+      const { by: _by, news: _news, ...copy } = JSON.parse(row.doc).copy;
+      return copy;
+    });
     const [news, newsCost] = await step.do("news", { timeout: "12 minutes" }, () => weekNews(db, client, season, week))
       .catch(() => [null, null] as [null, null]); // best effort
     const costs: (Spend | null)[] = [newsCost];
@@ -114,7 +122,7 @@ export class RecapWorkflow extends WorkflowEntrypoint<Env, Job> {
     let copy: J;
     try {
       // Batched: half price, and nothing waits on a connection for the minutes a high-effort draft takes.
-      const [draft, model, draftCost] = await askLater(step, client, "draft", brief, { facts, previous_weeks: earlier, news, used_headlines: usedHeadlines });
+      const [draft, model, draftCost] = await askLater(step, client, "draft", brief, { facts, previous_weeks: earlier, news, used_headlines: usedHeadlines, ...(take && { earlier_take: take }) });
       costs.push(draftCost);
       try {
         const [final, m, punchCost] = await askLater(step, client, "punch-up", `${brief}\n\n---\n\n${PUNCHUP}`, { facts, previous_weeks: earlier, news, used_headlines: usedHeadlines, draft });
