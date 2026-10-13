@@ -16,8 +16,9 @@ const USAGE = `node scripts/admin.ts <command> <league>
   link <league>      Print its private editor link, for fixing any line by hand.
   email <league> <address>
                      Let links@ send this league's links to that address (for comps: buyers' checkout emails already count).
-  redo <page URL>    Rewrite one post now (a Claude call or three). The old post stays up until the new one lands.
-                     Or: redo <league> <week> [weekly | day-YYYY-MM-DD]. Asks first.
+  redo <page URL>    Rewrite one post now (a Claude call or three). The old post stays up until the new one lands, and a
+                     weekly rewrite keeps its best jokes; add --fresh to start over. Or: redo <league> <week> [weekly |
+                     day-YYYY-MM-DD]. Asks first.
   takedown <league>  Delete its pages and posts, every season, for good. Asks first.`;
 
 const ORIGIN = "https://thebenchpress.app";
@@ -63,7 +64,8 @@ const editor = (lg: League) => `${home(lg)}edit?key=${lg.edit_key
   ?? sql(`UPDATE leagues SET edit_key = COALESCE(edit_key, lower(hex(randomblob(16)))) WHERE league_id = ${q(lg.league_id)} RETURNING edit_key`)[0].edit_key}`;
 const turnOff = (lg: League) => sql(`UPDATE leagues SET paid_via = NULL WHERE league_id = ${q(lg.league_id)}`);
 
-const [command = "", arg = "", ...rest] = process.argv.slice(2);
+const fresh = process.argv.includes("--fresh"); // redo: ignore the post being replaced
+const [command = "", arg = "", ...rest] = process.argv.slice(2).filter((a) => a !== "--fresh");
 try {
   if (command === "comp") {
     const lg = await find(arg, true);
@@ -122,7 +124,7 @@ try {
     // The row has to exist for the Workflow to save into; an existing post stays up until the rewrite replaces it.
     sql(`INSERT OR IGNORE INTO recaps (league_id, season, week, kind, status) VALUES (${q(lg.league_id)}, ${q(season)}, ${Number(week)}, ${q(kind)}, 'pending')`);
     const id = `${lg.league_id}-${season}-${week}-${kind}-${Date.now()}`; // a fresh instance ID, so a rerun never collides with an earlier one
-    run("npx", ["wrangler", "workflows", "trigger", "recap", JSON.stringify({ league_id: lg.league_id, season, week: Number(week), kind }), "--id", id]);
+    run("npx", ["wrangler", "workflows", "trigger", "recap", JSON.stringify({ league_id: lg.league_id, season, week: Number(week), kind, ...(fresh && { fresh }) }), "--id", id]);
     console.log(`queued ${id}: watch it with npx wrangler workflows instances describe recap ${id}`);
   } else if (command === "takedown") {
     const lg = await find(arg);

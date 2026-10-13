@@ -31,7 +31,8 @@ interface Env {
   EXAMPLE: string; // slug of a league to show off on the landing page
   ORIGIN: string; // the canonical address, e.g. https://thebenchpress.app
 }
-interface Job { league_id: string; season: string; week: number; kind: string; delay?: number } // delay: seconds before it starts
+// delay: seconds before it starts; fresh: a rewrite that ignores the post it replaces (admin.ts redo --fresh)
+interface Job { league_id: string; season: string; week: number; kind: string; delay?: number; fresh?: boolean }
 interface League {
   league_id: string; slug: string; name: string; season: string; paid_via: string | null; intro: string; lore: string; edit_key: string | null;
   email_hash: string | null;
@@ -41,7 +42,7 @@ const LLM = { retries: { limit: 3, delay: "2 minutes", backoff: "exponential" },
 
 export class RecapWorkflow extends WorkflowEntrypoint<Env, Job> {
   async run(event: WorkflowEvent<Job>, step: WorkflowStep) {
-    const { league_id, season, week, kind, delay } = event.payload;
+    const { league_id, season, week, kind, delay, fresh } = event.payload;
     const db = this.env.DB;
     if (delay) await step.sleep("stagger", delay * 1000);
     const save = (status: string, doc: J = null) => step.do(`save (${status})`, async () => {
@@ -107,8 +108,8 @@ export class RecapWorkflow extends WorkflowEntrypoint<Env, Job> {
     // The weekly recap: the week's shared news, a draft, a punch-up. Any failure falls back a step, so the numbers always ship.
     const earlier = await step.do("earlier", () => copies(db, league_id, season, week, "weekly"));
     const usedHeadlines = await step.do("headlines", () => headlines(db, league_id, season, week, kind));
-    // A rewrite (admin redo) starts from the version it replaces, so what worked survives.
-    const take = await step.do("earlier take", async () => {
+    // A rewrite (admin redo) starts from the version it replaces, so what worked survives, unless it's asked to start over.
+    const take = fresh ? null : await step.do("earlier take", async () => {
       const row = await db.prepare("SELECT doc FROM recaps WHERE league_id = ? AND season = ? AND week = ? AND kind = 'weekly' AND status = 'done'")
         .bind(league_id, season, week).first<{ doc: string }>();
       if (!row) return null;
